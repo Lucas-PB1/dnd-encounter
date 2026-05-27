@@ -24,6 +24,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import CombatantForm from './components/CombatantForm';
 import RollResultsPanel from './components/RollResultsPanel';
 import CombatLog from './components/CombatLog';
+import SavedCombatsPanel from './components/SavedCombatsPanel';
 
 export default function App() {
   // Live State
@@ -447,6 +448,17 @@ export default function App() {
     });
 
     setHasStarted(false);
+  };
+
+  const handleLoadCombatLibrary = (freshCombatants: Combatant[], name: string) => {
+    setCombatants(freshCombatants);
+    setRound(1);
+    setCurrentTurnIndex(0);
+    setHasStarted(false);
+    setCurrentRoll(null);
+    setAttackConfigureId(null);
+    setHpInputValues({});
+    addLog(`Cenário carregado: "${name}" foi iniciado! Todos os combatentes foram restaurados com vida cheia.`, 'setup');
   };
 
   const sortedAndFilteredCombatants = combatants.filter(c => {
@@ -969,6 +981,13 @@ export default function App() {
               onLog={addLog}
             />
           </div>
+
+          {/* 1.5. Saved Combats Library Panel */}
+          <SavedCombatsPanel
+            currentCombatants={combatants}
+            onLoadCombatants={handleLoadCombatLibrary}
+            onLog={addLog}
+          />
 
           {/* 2. Live rolling output results */}
           <RollResultsPanel 
