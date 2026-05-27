@@ -1,0 +1,6 @@
+{
+  "name": "Iniciativa e Combate D&D",
+  "description": "Sistema ágil e inteligente para gerenciar combates, controlar vida de grupos de monstros e rolar ataques em massa de forma simples.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
