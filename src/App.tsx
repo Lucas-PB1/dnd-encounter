@@ -155,8 +155,31 @@ export default function App() {
         let logType: LogEntry['type'] = 'info';
 
         if (mode === 'damage') {
-          nextHp = Math.max(0, c.currentHp - amount);
-          eventMessage = `recebeu ${amount} de dano`;
+          if (c.type === 'enemy' && c.groupSize > 1) {
+            const prevAliveCount = Math.ceil(c.currentHp / c.individualHp);
+            if (prevAliveCount > 0) {
+              const currentActiveHp = c.currentHp - (prevAliveCount - 1) * c.individualHp;
+              if (amount >= currentActiveHp) {
+                // Standard RPG non-spillover rule: only 1 creature dies, and any dynamic excess damage is completely discarded.
+                nextHp = (prevAliveCount - 1) * c.individualHp;
+                const excess = amount - currentActiveHp;
+                if (excess > 0) {
+                  eventMessage = `recebeu ${amount} de dano (${currentActiveHp} aplicado, ${excess} de dano excedente foi descartado e ignorado)`;
+                } else {
+                  eventMessage = `recebeu ${amount} de dano e foi derrotado`;
+                }
+              } else {
+                nextHp = c.currentHp - amount;
+                eventMessage = `recebeu ${amount} de dano`;
+              }
+            } else {
+              nextHp = 0;
+              eventMessage = `recebeu ${amount} de dano (já estava derrotado)`;
+            }
+          } else {
+            nextHp = Math.max(0, c.currentHp - amount);
+            eventMessage = `recebeu ${amount} de dano`;
+          }
           logType = 'damage';
         } else if (mode === 'heal') {
           nextHp = Math.min(c.maxHp, c.currentHp + amount);
@@ -772,11 +795,11 @@ export default function App() {
                               className={`h-full transition-all duration-300 ${
                                 isDead
                                   ? 'bg-zinc-800'
-                                  : (c.currentHp / c.maxHp) <= 0.3
-                                    ? 'bg-rose-650' // low health
-                                    : (c.currentHp / c.maxHp) <= 0.6
-                                      ? 'bg-amber-600'
-                                      : 'bg-emerald-600'
+                                  : (c.currentHp / c.maxHp) < 0.3
+                                    ? 'bg-rose-500' // vermelho (< 30%)
+                                    : (c.currentHp / c.maxHp) <= 0.7
+                                      ? 'bg-[#e5c158]' // amarelo (30% - 70%)
+                                      : 'bg-emerald-500' // verde (> 70%)
                               }`}
                               style={{ width: `${(c.currentHp / c.maxHp) * 100}%` }}
                             ></div>
