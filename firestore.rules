@@ -1,0 +1,47 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net - Default Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions for validation
+    function isValidId(id) { 
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    }
+
+    function incoming() { 
+      return request.resource.data; 
+    }
+
+    function isValidSession(data) {
+      return data.sessionCode is string && 
+             data.sessionCode.size() <= 10 &&
+             data.currentTurnIndex is int &&
+             data.round is int &&
+             data.logs is list &&
+             data.combatants is list &&
+             data.hasStarted is bool &&
+             data.lastUpdated is int;
+    }
+
+    // 2. Secured Combat Sessions Collection
+    match /combatSessions/{sessionCode} {
+      // Spectators and DMs can fetch the session directly by its code
+      allow get: if isValidId(sessionCode);
+      
+      // Specifically forbid list queries to prevent scanning all running campaigns
+      allow list: if false;
+
+      // DM can register and write states
+      allow create: if isValidId(sessionCode) && isValidSession(incoming());
+      
+      // DM can edit and update campaign status
+      allow update: if isValidId(sessionCode) && isValidSession(incoming());
+
+      // Only allow delete if we really want to, or keep it false
+      allow delete: if false;
+    }
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "entities": {
+    "CombatSession": {
+      "title": "Combat Session",
+      "description": "Stores state of active D&D sharing combat",
+      "type": "object",
+      "properties": {
+        "sessionCode": {
+          "type": "string",
+          "description": "5-letter code for the session"
+        },
+        "combatants": {
+          "type": "array",
+          "description": "Full array representing active combatants"
+        },
+        "currentTurnIndex": {
+          "type": "number",
+          "description": "Index of current turn combatant"
+        },
+        "round": {
+          "type": "number",
+          "description": "Round number"
+        },
+        "logs": {
+          "type": "array",
+          "description": "List of recent logs of events"
+        },
+        "currentRoll": {
+          "type": "object",
+          "description": "Details of the most recent critical/non-critical roll"
+        },
+        "hasStarted": {
+          "type": "boolean",
+          "description": "Whether the combat has started"
+        },
+        "lastUpdated": {
+          "type": "number",
+          "description": "Timestamp in milliseconds"
+        }
+      },
+      "required": ["sessionCode", "combatants", "currentTurnIndex", "round", "logs", "hasStarted", "lastUpdated"]
+    }
+  },
+  "firestore": {
+    "/combatSessions/{sessionCode}": {
+      "schema": "CombatSession",
+      "description": "Collecetion of real-time combat sessions synced to Google Firestore"
+    }
+  }
+}

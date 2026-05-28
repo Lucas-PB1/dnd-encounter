@@ -26,6 +26,8 @@ import RollResultsPanel from './components/RollResultsPanel';
 import CombatLog from './components/CombatLog';
 import SavedCombatsPanel from './components/SavedCombatsPanel';
 import ShareSessionPanel from './components/ShareSessionPanel';
+import { db, testConnection, handleFirestoreError, OperationType } from './lib/firebase';
+import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 
 export default function App() {
   // Live State
@@ -57,6 +59,8 @@ export default function App() {
 
   // Load from LocalStorage
   useEffect(() => {
+    testConnection(); // Verify Firestore database connectivity on boot
+
     const searchParams = new URLSearchParams(window.location.search);
     const code = searchParams.get('session');
     
@@ -90,7 +94,7 @@ export default function App() {
     if (savedHasStarted) setHasStarted(savedHasStarted === 'true');
   }, []);
 
-  // Spectator mode automatic live polling
+  // Spectator mode automatic live syncing with Firestore in Real-Time!
   useEffect(() => {
     const searchParams = new URLSearchParams(window.location.search);
     const codeFromUrl = searchParams.get('session');
@@ -99,66 +103,59 @@ export default function App() {
     const cleanCode = codeFromUrl.trim().toUpperCase();
     let isMounted = true;
 
-    const fetchSessionState = async () => {
-      try {
-        const response = await fetch(`/api/sessions/${cleanCode}`);
-        if (!response.ok) {
-          throw new Error("Sessão não encontrada");
-        }
-        const data = await response.json();
-        
-        if (isMounted) {
-          setCombatants(data.combatants || []);
-          setCurrentTurnIndex(data.currentTurnIndex || 0);
-          setRound(data.round || 1);
-          setLogs(data.logs || []);
-          setCurrentRoll(data.currentRoll || null);
-          setHasStarted(data.hasStarted || false);
-          setSpectatorError('');
-        }
-      } catch (err: any) {
-        if (isMounted) {
-          console.error("Erro ao sincronizar sessão como espectador:", err);
-          setSpectatorError("Não foi possível carregar a sessão de combate. O código de sessão pode estar incorreto ou expirou.");
-        }
+    const docRef = doc(db, 'combatSessions', cleanCode);
+    const unsubscribe = onSnapshot(docRef, (snapshot) => {
+      if (!isMounted) return;
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        setCombatants(data.combatants || []);
+        setCurrentTurnIndex(data.currentTurnIndex || 0);
+        setRound(data.round || 1);
+        setLogs(data.logs || []);
+        setCurrentRoll(data.currentRoll || null);
+        setHasStarted(data.hasStarted || false);
+        setSpectatorError('');
+      } else {
+        setSpectatorError("Não foi possível localizar a mesa de combate. O código de sessão pode estar incorreto ou expirou.");
       }
-    };
-
-    fetchSessionState();
-    const timer = setInterval(fetchSessionState, 3000); // Check updates every 3 seconds
+    }, (error) => {
+      if (isMounted) {
+        console.error("Erro na sincronização em tempo real do Firestore:", error);
+        setSpectatorError("Falha de conexão com o servidor de dados do Firestore.");
+        handleFirestoreError(error, OperationType.GET, `combatSessions/${cleanCode}`);
+      }
+    });
 
     return () => {
       isMounted = false;
-      clearInterval(timer);
+      unsubscribe();
     };
   }, [isSpectatorMode]);
 
-  // DM sync states to server when sharing session is active
+  // DM sync states to Firestore (debounced) when sharing session is active
   useEffect(() => {
     if (isSpectatorMode || !sessionCode) return;
 
-    const updateSharedStateOnServer = async () => {
+    const updateSharedStateOnFirestore = async () => {
+      const cleanCode = sessionCode.trim().toUpperCase();
       try {
-        await fetch(`/api/sessions/${sessionCode}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            combatants,
-            currentTurnIndex,
-            round,
-            logs,
-            currentRoll,
-            hasStarted
-          })
+        await setDoc(doc(db, 'combatSessions', cleanCode), {
+          sessionCode: cleanCode,
+          combatants,
+          currentTurnIndex,
+          round,
+          logs,
+          currentRoll,
+          hasStarted,
+          lastUpdated: Date.now()
         });
       } catch (err) {
-        console.error("Erro ao sincronizar dados do mestre com o servidor:", err);
+        console.error("Erro ao sincronizar dados do mestre com o Firestore:", err);
+        handleFirestoreError(err, OperationType.WRITE, `combatSessions/${cleanCode}`);
       }
     };
 
-    const debounceId = setTimeout(updateSharedStateOnServer, 500); // 500ms debounce
+    const debounceId = setTimeout(updateSharedStateOnFirestore, 600); // 600ms debounce
     return () => clearTimeout(debounceId);
   }, [combatants, currentTurnIndex, round, logs, currentRoll, hasStarted, sessionCode, isSpectatorMode]);
 
@@ -188,35 +185,40 @@ export default function App() {
     localStorage.setItem('dnd_has_started', hasStarted.toString());
   }, [hasStarted, isSpectatorMode]);
 
+  // Generate safe 5-letter uppercase alphanumeric codes for sessions
+  const generateSessionCode = () => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Highly readable alphanumeric set (avoids O/0, I/1)
+    let code = '';
+    for (let i = 0; i < 5; i++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return code;
+  };
+
   // Sharing Action Handlers
   const handleStartSharing = async () => {
     try {
-      const response = await fetch('/api/sessions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          combatants,
-          currentTurnIndex,
-          round,
-          logs,
-          currentRoll,
-          hasStarted
-        })
+      const code = generateSessionCode();
+      const cleanCode = code.trim().toUpperCase();
+      
+      await setDoc(doc(db, 'combatSessions', cleanCode), {
+        sessionCode: cleanCode,
+        combatants,
+        currentTurnIndex,
+        round,
+        logs,
+        currentRoll,
+        hasStarted,
+        lastUpdated: Date.now()
       });
 
-      if (!response.ok) {
-        throw new Error("Erro de resposta do servidor");
-      }
-
-      const data = await response.json();
-      setSessionCode(data.sessionCode);
-      localStorage.setItem('dnd_active_share_code', data.sessionCode);
-      addLog(`Compartilhamento em tempo real ativado! Código da sessão: ${data.sessionCode}`, 'setup');
+      setSessionCode(cleanCode);
+      localStorage.setItem('dnd_active_share_code', cleanCode);
+      addLog(`Compartilhamento em tempo real do Firestore ativado! Código da sessão: ${cleanCode}`, 'setup');
     } catch (err) {
-      console.error("Erro ao iniciar sessão online:", err);
-      addLog("Falha ao ativar compartilhamento em tempo real. Verifique seu servidor.", "info");
+      console.error("Erro ao iniciar sessão online no Firestore:", err);
+      addLog("Falha ao ativar compartilhamento em tempo real. Verifique sua conexão com o Firestore.", "info");
+      handleFirestoreError(err, OperationType.CREATE, 'combatSessions');
     }
   };
 
