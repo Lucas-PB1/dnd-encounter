@@ -25,6 +25,7 @@ import CombatantForm from './components/CombatantForm';
 import RollResultsPanel from './components/RollResultsPanel';
 import CombatLog from './components/CombatLog';
 import SavedCombatsPanel from './components/SavedCombatsPanel';
+import ShareSessionPanel from './components/ShareSessionPanel';
 
 export default function App() {
   // Live State
@@ -47,8 +48,23 @@ export default function App() {
   const [customTargetAc, setCustomTargetAc] = useState<string>('10');
   const [attackerCountInput, setAttackerCountInput] = useState<number>(1);
 
+  // Sharing Session States
+  const [isSpectatorMode, setIsSpectatorMode] = useState<boolean>(false);
+  const [sessionCode, setSessionCode] = useState<string>(() => {
+    return localStorage.getItem('dnd_active_share_code') || '';
+  });
+  const [spectatorError, setSpectatorError] = useState<string>('');
+
   // Load from LocalStorage
   useEffect(() => {
+    const searchParams = new URLSearchParams(window.location.search);
+    const code = searchParams.get('session');
+    
+    if (code) {
+      setIsSpectatorMode(true);
+      return; // Stop local storage recovery so spectators get server-driven state
+    }
+
     const savedCombatants = localStorage.getItem('dnd_combatants');
     const savedLogs = localStorage.getItem('dnd_logs');
     const savedRound = localStorage.getItem('dnd_round');
@@ -74,26 +90,145 @@ export default function App() {
     if (savedHasStarted) setHasStarted(savedHasStarted === 'true');
   }, []);
 
+  // Spectator mode automatic live polling
+  useEffect(() => {
+    const searchParams = new URLSearchParams(window.location.search);
+    const codeFromUrl = searchParams.get('session');
+    if (!isSpectatorMode || !codeFromUrl) return;
+
+    const cleanCode = codeFromUrl.trim().toUpperCase();
+    let isMounted = true;
+
+    const fetchSessionState = async () => {
+      try {
+        const response = await fetch(`/api/sessions/${cleanCode}`);
+        if (!response.ok) {
+          throw new Error("Sessão não encontrada");
+        }
+        const data = await response.json();
+        
+        if (isMounted) {
+          setCombatants(data.combatants || []);
+          setCurrentTurnIndex(data.currentTurnIndex || 0);
+          setRound(data.round || 1);
+          setLogs(data.logs || []);
+          setCurrentRoll(data.currentRoll || null);
+          setHasStarted(data.hasStarted || false);
+          setSpectatorError('');
+        }
+      } catch (err: any) {
+        if (isMounted) {
+          console.error("Erro ao sincronizar sessão como espectador:", err);
+          setSpectatorError("Não foi possível carregar a sessão de combate. O código de sessão pode estar incorreto ou expirou.");
+        }
+      }
+    };
+
+    fetchSessionState();
+    const timer = setInterval(fetchSessionState, 3000); // Check updates every 3 seconds
+
+    return () => {
+      isMounted = false;
+      clearInterval(timer);
+    };
+  }, [isSpectatorMode]);
+
+  // DM sync states to server when sharing session is active
+  useEffect(() => {
+    if (isSpectatorMode || !sessionCode) return;
+
+    const updateSharedStateOnServer = async () => {
+      try {
+        await fetch(`/api/sessions/${sessionCode}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            combatants,
+            currentTurnIndex,
+            round,
+            logs,
+            currentRoll,
+            hasStarted
+          })
+        });
+      } catch (err) {
+        console.error("Erro ao sincronizar dados do mestre com o servidor:", err);
+      }
+    };
+
+    const debounceId = setTimeout(updateSharedStateOnServer, 500); // 500ms debounce
+    return () => clearTimeout(debounceId);
+  }, [combatants, currentTurnIndex, round, logs, currentRoll, hasStarted, sessionCode, isSpectatorMode]);
+
   // Save to LocalStorage
   useEffect(() => {
+    if (isSpectatorMode) return;
     localStorage.setItem('dnd_combatants', JSON.stringify(combatants));
-  }, [combatants]);
+  }, [combatants, isSpectatorMode]);
 
   useEffect(() => {
+    if (isSpectatorMode) return;
     localStorage.setItem('dnd_logs', JSON.stringify(logs));
-  }, [logs]);
+  }, [logs, isSpectatorMode]);
 
   useEffect(() => {
+    if (isSpectatorMode) return;
     localStorage.setItem('dnd_round', round.toString());
-  }, [round]);
+  }, [round, isSpectatorMode]);
 
   useEffect(() => {
+    if (isSpectatorMode) return;
     localStorage.setItem('dnd_turn_index', currentTurnIndex.toString());
-  }, [currentTurnIndex]);
+  }, [currentTurnIndex, isSpectatorMode]);
 
   useEffect(() => {
+    if (isSpectatorMode) return;
     localStorage.setItem('dnd_has_started', hasStarted.toString());
-  }, [hasStarted]);
+  }, [hasStarted, isSpectatorMode]);
+
+  // Sharing Action Handlers
+  const handleStartSharing = async () => {
+    try {
+      const response = await fetch('/api/sessions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          combatants,
+          currentTurnIndex,
+          round,
+          logs,
+          currentRoll,
+          hasStarted
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("Erro de resposta do servidor");
+      }
+
+      const data = await response.json();
+      setSessionCode(data.sessionCode);
+      localStorage.setItem('dnd_active_share_code', data.sessionCode);
+      addLog(`Compartilhamento em tempo real ativado! Código da sessão: ${data.sessionCode}`, 'setup');
+    } catch (err) {
+      console.error("Erro ao iniciar sessão online:", err);
+      addLog("Falha ao ativar compartilhamento em tempo real. Verifique seu servidor.", "info");
+    }
+  };
+
+  const handleStopSharing = () => {
+    localStorage.removeItem('dnd_active_share_code');
+    setSessionCode('');
+    addLog("Compartilhamento em tempo real desativado.", "info");
+  };
+
+  const handleExitSpectatorMode = () => {
+    window.location.search = '';
+  };
 
   // Log handler helper
   const addLog = (message: string, type: LogEntry['type'], combatantName?: string) => {
@@ -525,9 +660,9 @@ export default function App() {
             <div className="flex items-center gap-1.5 px-1">
               <button
                 onClick={handlePrevTurn}
-                disabled={combatants.length === 0 || !hasStarted}
+                disabled={combatants.length === 0 || !hasStarted || isSpectatorMode}
                 title="Voltar Turno"
-                className="p-2 text-zinc-400 hover:text-amber-500 disabled:text-zinc-700 hover:bg-[#16161a] rounded-lg border border-transparent disabled:bg-transparent transition-all cursor-pointer"
+                className="p-2 text-zinc-400 hover:text-amber-500 disabled:text-zinc-750 hover:bg-[#16161a] rounded-lg border border-transparent disabled:bg-transparent transition-all cursor-pointer"
                 id="btn-prev-turn"
               >
                 <ChevronLeft className="w-4 h-4" />
@@ -553,12 +688,14 @@ export default function App() {
 
               <button
                 onClick={handleNextTurn}
-                disabled={combatants.length === 0}
-                title={hasStarted ? "Avançar Turno" : "Iniciar Combate"}
+                disabled={combatants.length === 0 || isSpectatorMode}
+                title={isSpectatorMode ? "Modo leitura" : hasStarted ? "Avançar Turno" : "Iniciar Combate"}
                 className={`p-2 rounded-lg font-semibold transition-all cursor-pointer flex items-center justify-center gap-1 ${
-                  hasStarted
-                    ? 'text-amber-500 hover:text-white hover:bg-amber-600/15 border border-transparent hover:border-amber-600/30'
-                    : 'bg-amber-650 hover:bg-amber-500 text-black shadow-lg shadow-amber-600/20 border border-amber-400/20'
+                  isSpectatorMode
+                    ? 'bg-[#0d0d0f] text-zinc-700 border border-zinc-900 cursor-not-allowed'
+                    : hasStarted
+                      ? 'text-amber-500 hover:text-white hover:bg-amber-600/15 border border-transparent hover:border-amber-600/30'
+                      : 'bg-amber-650 hover:bg-amber-500 text-black shadow-lg shadow-amber-600/20 border border-amber-400/20'
                 }`}
                 id="btn-next-turn"
               >
@@ -570,9 +707,9 @@ export default function App() {
             <div className="flex items-center border-l border-[#2d2d35] pl-1.5 gap-1">
               <button
                 onClick={handleResetCombat}
-                disabled={combatants.length === 0}
+                disabled={combatants.length === 0 || isSpectatorMode}
                 title="Reiniciar Combate (Cura tudo, volta rodada 1)"
-                className="p-2 text-zinc-550 hover:text-amber-550 hover:bg-[#16161a] rounded-lg transition-all cursor-pointer disabled:text-zinc-800"
+                className="p-2 text-zinc-550 hover:text-amber-550 hover:bg-[#16161a] rounded-lg transition-all cursor-pointer disabled:text-zinc-800 disabled:opacity-30"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
               </button>
@@ -634,21 +771,23 @@ export default function App() {
                 </button>
               </div>
 
-              {combatants.length === 0 ? (
-                <button
-                  onClick={loadDemoEncounter}
-                  className="bg-[#0c0c0e] hover:bg-[#16161a] text-amber-500 hover:text-amber-400 px-3 py-1.5 text-[11px] font-semibold rounded-lg border border-[#2d2d35] transition-all cursor-pointer"
-                >
-                  Carregar Exemplo
-                </button>
-              ) : (
-                <button
-                  onClick={handleClearAll}
-                  className="bg-rose-950/20 hover:bg-rose-950/40 text-rose-450 px-3 py-1.5 text-[11px] font-semibold rounded-lg border border-rose-900/40 transition-all cursor-pointer flex items-center gap-1"
-                >
-                  <Trash2 className="w-3 h-3" />
-                  Esvaziar
-                </button>
+              {!isSpectatorMode && (
+                combatants.length === 0 ? (
+                  <button
+                    onClick={loadDemoEncounter}
+                    className="bg-[#0c0c0e] hover:bg-[#16161a] text-amber-500 hover:text-amber-400 px-3 py-1.5 text-[11px] font-semibold rounded-lg border border-[#2d2d35] transition-all cursor-pointer"
+                  >
+                    Carregar Exemplo
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleClearAll}
+                    className="bg-rose-950/20 hover:bg-rose-950/40 text-rose-450 px-3 py-1.5 text-[11px] font-semibold rounded-lg border border-rose-900/40 transition-all cursor-pointer flex items-center gap-1"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    Esvaziar
+                  </button>
+                )
               )}
             </div>
           </div>
@@ -657,19 +796,24 @@ export default function App() {
           <div className="space-y-3 relative" id="initiative-list">
             {combatants.length === 0 ? (
               <div className="bg-[#111115] border border-[#2d2d35] border-dashed rounded-2xl p-12 text-center text-zinc-500 flex flex-col items-center justify-center shadow-inner">
-                <div className="w-12 h-12 bg-[#0c0c0e] rounded-full flex items-center justify-center border border-[#2d2d35] mb-4 animate-bounce">
+                <div className="w-12 h-12 bg-[#0c0c0e] rounded-full flex items-center justify-center border border-[#2d2d35] mb-4">
                   <Dice5 className="w-6 h-6 text-amber-500" />
                 </div>
                 <h3 className="text-md font-bold text-zinc-350 font-display mb-1">Iniciativa Vazia</h3>
                 <p className="text-xs text-zinc-500 max-w-sm leading-relaxed mb-6">
-                  Nenhum guerreiro ou monstro na arena ainda. Adicione aliados ou monstros usando o formulário ao lado ou carregue o exemplo rápido de sessão de combate!
+                  {isSpectatorMode 
+                    ? "Nenhum combatente ativo na mesa compartilhada do mestre ainda."
+                    : "Nenhum guerreiro ou monstro na arena ainda. Adicione aliados ou monstros usando o formulário ao lado ou carregue o exemplo rápido de sessão de combate!"
+                  }
                 </p>
-                <button
-                  onClick={loadDemoEncounter}
-                  className="bg-amber-600 hover:bg-amber-500 text-black font-semibold text-xs px-4 py-2.5 rounded-lg shadow-md transition-all cursor-pointer"
-                >
-                  Carregar Exemplo de Combate (32 HP Guerreiro vs 3x Orcs)
-                </button>
+                {!isSpectatorMode && (
+                  <button
+                    onClick={loadDemoEncounter}
+                    className="bg-amber-600 hover:bg-amber-500 text-black font-semibold text-xs px-4 py-2.5 rounded-lg shadow-md transition-all cursor-pointer"
+                  >
+                    Carregar Exemplo de Combate (32 HP Guerreiro vs 3x Orcs)
+                  </button>
+                )}
               </div>
             ) : (
               <AnimatePresence>
@@ -814,89 +958,91 @@ export default function App() {
                         </div>
 
                         {/* RIGHT SECTION: Quick Damage / Heal Inputs & Rolling Attacks */}
-                        <div className="flex items-center gap-2 self-end md:self-auto shrink-0 flex-wrap">
-                          {/* HP Quick Modifier bar */}
-                          <div className="flex items-center bg-[#0c0c0e] rounded-lg overflow-hidden border border-[#2d2d35]">
-                            {/* Damage - */}
-                            <button
-                              onClick={() => {
-                                handleModifyHp(c.id, hpInputValues[c.id] || "1", 'damage');
-                              }}
-                              title="Aplicar Dano"
-                              className="px-2.5 py-1.5 bg-rose-950/30 hover:bg-rose-900 border-r border-[#2d2d35] text-rose-400 hover:text-white transition-all text-xs font-extrabold cursor-pointer"
-                            >
-                              Dano
-                            </button>
+                        {!isSpectatorMode ? (
+                          <div className="flex items-center gap-2 self-end md:self-auto shrink-0 flex-wrap">
+                            {/* HP Quick Modifier bar */}
+                            <div className="flex items-center bg-[#0c0c0e] rounded-lg overflow-hidden border border-[#2d2d35]">
+                              {/* Damage - */}
+                              <button
+                                onClick={() => {
+                                  handleModifyHp(c.id, hpInputValues[c.id] || "1", 'damage');
+                                }}
+                                title="Aplicar Dano"
+                                className="px-2.5 py-1.5 bg-rose-950/30 hover:bg-rose-900 border-r border-[#2d2d35] text-rose-400 hover:text-white transition-all text-xs font-extrabold cursor-pointer"
+                              >
+                                Dano
+                              </button>
 
-                            {/* HP Amount input */}
-                            <input
-                              type="number"
-                              placeholder="Qtd"
-                              value={hpInputValues[c.id] || ''}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setHpInputValues(prev => ({ ...prev, [c.id]: val }));
-                              }}
-                              className="w-12 bg-transparent text-center text-zinc-200 outline-none text-xs font-bold font-mono py-1 placeholder-zinc-750"
-                              id={`input-hp-adjust-${c.id}`}
-                            />
+                              {/* HP Amount input */}
+                              <input
+                                type="number"
+                                placeholder="Qtd"
+                                value={hpInputValues[c.id] || ''}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setHpInputValues(prev => ({ ...prev, [c.id]: val }));
+                                }}
+                                className="w-12 bg-transparent text-center text-zinc-200 outline-none text-xs font-bold font-mono py-1 placeholder-zinc-750"
+                                id={`input-hp-adjust-${c.id}`}
+                              />
 
-                            {/* Heals + */}
+                              {/* Heals + */}
+                              <button
+                                onClick={() => {
+                                  handleModifyHp(c.id, hpInputValues[c.id] || "1", 'heal');
+                                }}
+                                title="Curar"
+                                className="px-2.5 py-1.5 bg-emerald-950/30 hover:bg-emerald-900 text-emerald-400 hover:text-white transition-all text-xs font-extrabold cursor-pointer"
+                              >
+                                Cura
+                              </button>
+                            </div>
+
+                            {/* ROLL ATTACKS (Only for alive enemy units) */}
+                            {c.type === 'enemy' && (
+                              <button
+                                onClick={() => {
+                                  if (attackConfigureId === c.id) {
+                                    setAttackConfigureId(null);
+                                  } else {
+                                    setAttackConfigureId(c.id);
+                                    const firstActivePlayer = combatants.find(x => x.type === 'player' && !x.isDefeated);
+                                    if (firstActivePlayer) {
+                                      setSelectedTargetId(firstActivePlayer.id);
+                                      setCustomTargetAc(firstActivePlayer.ac.toString());
+                                    } else {
+                                      setSelectedTargetId('manual');
+                                      setCustomTargetAc('10');
+                                    }
+                                    setAttackerCountInput(aliveCount > 0 ? aliveCount : 1);
+                                  }
+                                }}
+                                disabled={isDead}
+                                title={`Rolar ataque para ${aliveCount} monstro(s)`}
+                                className={`p-1.5 rounded-lg border flex items-center gap-1.5 text-xs font-semibold cursor-pointer transition-all ${
+                                  isDead
+                                    ? 'bg-[#0a0a0c] text-zinc-700 border-zinc-900 cursor-not-allowed'
+                                    : attackConfigureId === c.id
+                                      ? 'bg-amber-500 text-black border-amber-400'
+                                      : 'bg-[#ffc83b]/10 border-[#ffc83b]/35 text-[#ffc83b] hover:bg-[#ffc83b]/25 shadow-sm'
+                                }`}
+                                id={`btn-attack-roll-${c.id}`}
+                              >
+                                <Swords className="w-3.5 h-3.5 shrink-0" />
+                                Atacar
+                              </button>
+                            )}
+
+                            {/* Quick Manual slider toggle */}
                             <button
-                              onClick={() => {
-                                handleModifyHp(c.id, hpInputValues[c.id] || "1", 'heal');
-                              }}
-                              title="Curar"
-                              className="px-2.5 py-1.5 bg-emerald-950/30 hover:bg-emerald-900 text-emerald-400 hover:text-white transition-all text-xs font-extrabold cursor-pointer"
+                              onClick={() => handleRemoveCombatant(c.id, c.name)}
+                              title="Remover Combatente"
+                              className="p-1.5 text-zinc-500 hover:text-rose-450 border border-transparent hover:border-[#2d2d35] hover:bg-[#0c0c0e] rounded-lg transition-all cursor-pointer"
                             >
-                              Cura
+                              <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           </div>
-
-                          {/* ROLL ATTACKS (Only for alive enemy units) */}
-                          {c.type === 'enemy' && (
-                            <button
-                              onClick={() => {
-                                if (attackConfigureId === c.id) {
-                                  setAttackConfigureId(null);
-                                } else {
-                                  setAttackConfigureId(c.id);
-                                  const firstActivePlayer = combatants.find(x => x.type === 'player' && !x.isDefeated);
-                                  if (firstActivePlayer) {
-                                    setSelectedTargetId(firstActivePlayer.id);
-                                    setCustomTargetAc(firstActivePlayer.ac.toString());
-                                  } else {
-                                    setSelectedTargetId('manual');
-                                    setCustomTargetAc('10');
-                                  }
-                                  setAttackerCountInput(aliveCount > 0 ? aliveCount : 1);
-                                }
-                              }}
-                              disabled={isDead}
-                              title={`Rolar ataque para ${aliveCount} monstro(s)`}
-                              className={`p-1.5 rounded-lg border flex items-center gap-1.5 text-xs font-semibold cursor-pointer transition-all ${
-                                isDead
-                                  ? 'bg-[#0a0a0c] text-zinc-700 border-zinc-900 cursor-not-allowed'
-                                  : attackConfigureId === c.id
-                                    ? 'bg-amber-500 text-black border-amber-400'
-                                    : 'bg-amber-600/10 border-amber-600/35 text-amber-500 hover:bg-amber-600/25'
-                              }`}
-                              id={`btn-attack-roll-${c.id}`}
-                            >
-                              <Swords className="w-3.5 h-3.5 shrink-0" />
-                              Atacar
-                            </button>
-                          )}
-
-                          {/* Quick Manual slider toggle */}
-                          <button
-                            onClick={() => handleRemoveCombatant(c.id, c.name)}
-                            title="Remover Combatente"
-                            className="p-1.5 text-zinc-500 hover:text-rose-450 border border-transparent hover:border-[#2d2d35] hover:bg-[#0c0c0e] rounded-lg transition-all cursor-pointer"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                        ) : null}
 
                       </div>
 
@@ -992,25 +1138,39 @@ export default function App() {
         {/* RIGHT COLUMN: CONTROLS, ATTACKS ROLLS & HISTORY LOGS (SPAN 4) */}
         <div className="lg:col-span-4 flex flex-col space-y-6">
           
-          {/* 1. Add combatant custom panels */}
-          <div className="space-y-2">
-            <h3 className="text-xs font-bold text-zinc-400 tracking-wider uppercase flex items-center gap-1.5 font-display">
-              <Plus className="w-4 h-4 text-amber-500" />
-              Adicionar Combatente
-            </h3>
-            <CombatantForm 
-              onAddCombatant={handleAddCombatant} 
-              presets={MONSTER_PRESETS}
-              onLog={addLog}
-            />
-          </div>
-
-          {/* 1.5. Saved Combats Library Panel */}
-          <SavedCombatsPanel
-            currentCombatants={combatants}
-            onLoadCombatants={handleLoadCombatLibrary}
-            onLog={addLog}
+          {/* Share and transmission control panel */}
+          <ShareSessionPanel
+            isSpectatorMode={isSpectatorMode}
+            sessionCode={isSpectatorMode ? (new URLSearchParams(window.location.search).get('session')?.toUpperCase() || '') : sessionCode}
+            onStartSharing={handleStartSharing}
+            onStopSharing={handleStopSharing}
+            onExitSpectator={handleExitSpectatorMode}
+            spectatorError={spectatorError}
           />
+
+          {!isSpectatorMode && (
+            <>
+              {/* 1. Add combatant custom panels */}
+              <div className="space-y-2">
+                <h3 className="text-xs font-bold text-zinc-400 tracking-wider uppercase flex items-center gap-1.5 font-display">
+                  <Plus className="w-4 h-4 text-amber-500" />
+                  Adicionar Combatente
+                </h3>
+                <CombatantForm 
+                  onAddCombatant={handleAddCombatant} 
+                  presets={MONSTER_PRESETS}
+                  onLog={addLog}
+                />
+              </div>
+
+              {/* 1.5. Saved Combats Library Panel */}
+              <SavedCombatsPanel
+                currentCombatants={combatants}
+                onLoadCombatants={handleLoadCombatLibrary}
+                onLog={addLog}
+              />
+            </>
+          )}
 
           {/* 2. Live rolling output results */}
           <RollResultsPanel 
