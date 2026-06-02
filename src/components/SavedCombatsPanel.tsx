@@ -1,21 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import { Combatant, LogEntry } from '../types';
 import { Save, FolderOpen, Trash2, Shield, Heart, Users, Gamepad2, Play, Sparkles } from 'lucide-react';
+import { db, sanitizeData } from '../lib/firebase';
+import { collection, query, where, onSnapshot, setDoc, doc, deleteDoc } from 'firebase/firestore';
 
 interface SavedCombat {
   id: string;
+  userId: string;
   name: string;
   combatants: Combatant[];
   createdAt: string;
 }
 
 interface SavedCombatsPanelProps {
+  userId: string;
   currentCombatants: Combatant[];
   onLoadCombatants: (combatants: Combatant[], name: string) => void;
   onLog: (message: string, type: LogEntry['type'], combatantName?: string) => void;
 }
 
 export default function SavedCombatsPanel({
+  userId,
   currentCombatants,
   onLoadCombatants,
   onLog
@@ -23,26 +28,40 @@ export default function SavedCombatsPanel({
   const [savedCombats, setSavedCombats] = useState<SavedCombat[]>([]);
   const [encounterName, setEncounterName] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string>('');
+  const [isLoading, setIsLoading] = useState<boolean>(false);
 
-  // Load saved combats from Local Storage on mount
+  // Sync saved combats from Firestore in real-time
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem('dnd_saved_combats_list');
-      if (stored) {
-        setSavedCombats(JSON.parse(stored));
-      }
-    } catch (e) {
-      console.error('Failed to parse saved combats from localStorage:', e);
+    if (!userId) {
+      setSavedCombats([]);
+      return;
     }
-  }, []);
 
-  const saveToStorage = (list: SavedCombat[]) => {
-    localStorage.setItem('dnd_saved_combats_list', JSON.stringify(list));
-    setSavedCombats(list);
-  };
+    setIsLoading(true);
+    const q = query(collection(db, 'savedCombats'), where('userId', '==', userId));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const list: SavedCombat[] = [];
+      snapshot.forEach((doc) => {
+        list.push({ id: doc.id, ...doc.data() } as SavedCombat);
+      });
+      // Sort newest first
+      list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      setSavedCombats(list);
+      setIsLoading(false);
+    }, (error) => {
+      console.error('Erro ao escutar savedCombats:', error);
+      setIsLoading(false);
+    });
 
-  const handleSaveCurrent = (e: React.FormEvent) => {
+    return () => unsubscribe();
+  }, [userId]);
+
+  const handleSaveCurrent = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!userId) {
+      setErrorMsg('Configure um usuário/mestre ativo para salvar cenários.');
+      return;
+    }
     if (!encounterName.trim()) {
       setErrorMsg('Por favor, defina um nome para o combate.');
       return;
@@ -52,53 +71,61 @@ export default function SavedCombatsPanel({
       return;
     }
 
-    const newSaved: SavedCombat = {
-      id: Math.random().toString(36).substring(2, 9),
-      name: encounterName.trim(),
-      // Store a deep copy of current combatants, resetting status modifiers if wanted or restoring them exactly
-      combatants: currentCombatants.map(c => ({
-        ...c,
-        // Reset dynamic states to full health for clean layout templates, but keep base stats
-        currentHp: c.maxHp,
-        isDefeated: false
-      })),
-      createdAt: new Date().toLocaleDateString('pt-BR') + ' ' + new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
-    };
+    const cleanName = encounterName.trim();
+    const id = Math.random().toString(36).substring(2, 9);
+    
+    // Reset dynamic states to full health for clean templates
+    const cleanCombatants = currentCombatants.map(c => ({
+      ...c,
+      currentHp: c.maxHp,
+      isDefeated: false
+    }));
 
-    const duplicateIndex = savedCombats.findIndex(
-      item => item.name.toLowerCase() === newSaved.name.toLowerCase()
-    );
+    const dateStr = new Date().toLocaleDateString('pt-BR') + ' ' + new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
-    let updatedList = [...savedCombats];
-    if (duplicateIndex >= 0) {
-      // Confirm override or just update
-      updatedList[duplicateIndex] = {
-        ...newSaved,
-        id: savedCombats[duplicateIndex].id // Retain original ID
+    try {
+      // Check if duplicate name exists in present list to overwrite
+      const duplicate = savedCombats.find(item => item.name.toLowerCase() === cleanName.toLowerCase());
+      const docId = duplicate ? duplicate.id : id;
+
+      const newSaved: SavedCombat = {
+        id: docId,
+        userId,
+        name: cleanName,
+        combatants: cleanCombatants,
+        createdAt: dateStr
       };
-      onLog(`Combate salvo: O combate "${newSaved.name}" foi sobrescrito com sucesso.`, 'setup');
-    } else {
-      updatedList.unshift(newSaved);
-      onLog(`Combate salvo: Roteiro "${newSaved.name}" adicionado à sua biblioteca pessoal.`, 'setup');
-    }
 
-    saveToStorage(updatedList);
-    setEncounterName('');
-    setErrorMsg('');
+      await setDoc(doc(db, 'savedCombats', docId), sanitizeData(newSaved));
+      
+      if (duplicate) {
+        onLog(`Combate salvo: O cenário "${cleanName}" foi atualizado e sincronizado na nuvem.`, 'setup');
+      } else {
+        onLog(`Combate salvo: Cenário "${cleanName}" construído e salvo na nuvem.`, 'setup');
+      }
+      setEncounterName('');
+      setErrorMsg('');
+    } catch (err) {
+      console.error('Erro ao salvar no Firestore:', err);
+      setErrorMsg('Erro de rede ao salvar cenário no banco Firestore.');
+    }
   };
 
-  const handleDelete = (id: string, name: string, e: React.MouseEvent) => {
+  const handleDelete = async (id: string, name: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    const updated = savedCombats.filter(item => item.id !== id);
-    saveToStorage(updated);
-    onLog(`Combate removido: "${name}" foi apagado da lista de salvamentos rápidos.`, 'setup');
+    try {
+      await deleteDoc(doc(db, 'savedCombats', id));
+      onLog(`Combate removido: "${name}" foi apagado da nuvem.`, 'setup');
+    } catch (err) {
+      console.error('Erro ao deletar no Firestore:', err);
+    }
   };
 
   const handleLoad = (combat: SavedCombat) => {
-    // Return original combatants cloned fresh
+    // Return original combatants cloned fresh with new IDs
     const freshCombatants = combat.combatants.map(c => ({
       ...c,
-      id: Math.random().toString(36).substring(2, 9) + '-' + c.id.substring(0, 4) // uniquely identify newly cloned
+      id: Math.random().toString(36).substring(2, 9) + '-' + c.id.substring(0, 4)
     }));
     onLoadCombatants(freshCombatants, combat.name);
   };
@@ -112,8 +139,8 @@ export default function SavedCombatsPanel({
             <Save className="w-4 h-4 text-amber-500" />
           </div>
           <div>
-            <h3 className="text-xs font-bold text-zinc-300 tracking-wider uppercase">Meus Cenários Salvos</h3>
-            <span className="text-[10px] text-zinc-500 font-mono">Salvar e carregar cenários inteiros</span>
+            <h3 className="text-xs font-bold text-zinc-300 tracking-wider uppercase">Cenários de Combate (Nuvem)</h3>
+            <span className="text-[10px] text-zinc-500 font-mono">Salvo no Firestore por {userId || 'Desconhecido'}</span>
           </div>
         </div>
       </div>
@@ -128,7 +155,7 @@ export default function SavedCombatsPanel({
             <div className="flex gap-2">
               <input
                 type="text"
-                placeholder="Ex: Cerco Goblim, Encontro com Ogro"
+                placeholder="Ex: Cerco Goblin, Guardiões das Catacumbas"
                 value={encounterName}
                 onChange={(e) => {
                   setEncounterName(e.target.value);
@@ -138,9 +165,9 @@ export default function SavedCombatsPanel({
               />
               <button
                 type="submit"
-                disabled={currentCombatants.length === 0}
+                disabled={currentCombatants.length === 0 || !userId}
                 className={`py-1.5 px-3 rounded-lg text-xs font-bold tracking-wider uppercase flex items-center justify-center gap-1.5 cursor-pointer transition-all ${
-                  currentCombatants.length > 0
+                  currentCombatants.length > 0 && userId
                     ? 'bg-amber-600 hover:bg-amber-500 text-black shadow-md hover:shadow-amber-500/15'
                     : 'bg-[#1c1c24] text-zinc-650 cursor-not-allowed border border-[#111115]'
                 }`}
@@ -151,11 +178,11 @@ export default function SavedCombatsPanel({
             </div>
           </div>
           {errorMsg && (
-            <p className="text-[10px] text-rose-450 italic font-mono">{errorMsg}</p>
+            <p className="text-[10px] text-rose-455 italic font-mono">{errorMsg}</p>
           )}
-          {currentCombatants.length === 0 && (
-            <p className="text-[10px] text-zinc-600 italic">
-              * Monte um grupo de combate à esquerda para habilitar o salvamento.
+          {!userId && (
+            <p className="text-[10px] text-amber-500 italic">
+              * Defina o seu usuário/mestre para ativar o banco FireStore de cenários.
             </p>
           )}
         </form>
@@ -163,15 +190,19 @@ export default function SavedCombatsPanel({
         {/* Saved List */}
         <div className="space-y-2 border-t border-[#2d2d35]/60 pt-3">
           <label className="block text-[10px] font-bold text-zinc-500 tracking-wider uppercase mb-1">
-            Biblioteca de Combates ({savedCombats.length})
+            Cenários Salvos no Firestore ({savedCombats.length})
           </label>
 
-          {savedCombats.length === 0 ? (
+          {isLoading ? (
+            <div className="text-center py-4 text-xs font-mono text-zinc-500 animate-pulse">
+              Carregando cenários da nuvem...
+            </div>
+          ) : savedCombats.length === 0 ? (
             <div className="bg-[#0c0c0e]/30 border border-dashed border-[#2d2d35] rounded-lg p-5 text-center text-xs text-zinc-550 italic">
-              Nenhum cenário salvo ainda. Dê um nome no campo acima e clique em Salvar para preservar o combate atual no seu navegador!
+              Nenhum cenário cadastrado na nuvem para "{userId || 'este mestre'}". Escreva um nome no campo acima e clique em Salvar!
             </div>
           ) : (
-            <div className="max-h-56 overflow-y-auto pr-1 space-y-2">
+            <div className="max-h-56 overflow-y-auto pr-1 space-y-2" id="saved-combats-list">
               {savedCombats.map((combat) => {
                 const playersCount = combat.combatants.filter(tc => tc.type === 'player').length;
                 const enemiesCount = combat.combatants.filter(tc => tc.type === 'enemy').length;
@@ -200,7 +231,7 @@ export default function SavedCombatsPanel({
                           </span>
                         )}
                         {enemiesCount > 0 && (
-                          <span className="flex items-center gap-0.5 text-rose-450/90 font-bold bg-rose-950/20 px-1 rounded">
+                          <span className="flex items-center gap-0.5 text-rose-455/90 font-bold bg-rose-950/20 px-1 rounded">
                             <Users className="w-2.5 h-2.5" />
                             {combat.combatants.filter(e => e.type === 'enemy').reduce((sum, e) => sum + e.groupSize, 0)} M
                           </span>
@@ -219,8 +250,8 @@ export default function SavedCombatsPanel({
                           e.stopPropagation();
                           handleLoad(combat);
                         }}
-                        title="Injetar Cenário na Iniciativa"
-                        className="p-1 px-1.5 rounded bg-amber-600 hover:bg-amber-550 text-black font-extrabold text-[10px] flex items-center gap-0.5 hover:scale-105 transition-all shadow"
+                        title="Carregar Cenário no Combate Ativo"
+                        className="p-1 px-1.5 rounded bg-amber-600 hover:bg-amber-550 text-black font-extrabold text-[10px] flex items-center gap-0.5 hover:scale-105 transition-all shadow-sm"
                       >
                         <Play className="w-2.5 h-2.5 fill-black" />
                         Carregar
@@ -228,8 +259,8 @@ export default function SavedCombatsPanel({
                       <button
                         type="button"
                         onClick={(e) => handleDelete(combat.id, combat.name, e)}
-                        title="Excluir da Biblioteca"
-                        className="p-1.5 text-zinc-600 hover:text-rose-500 hover:bg-rose-950/10 rounded transition-all"
+                        title="Excluir da Nuvem"
+                        className="p-1.5 text-zinc-600 hover:text-rose-550 hover:bg-rose-950/10 rounded transition-all select-none"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>

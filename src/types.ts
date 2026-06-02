@@ -53,3 +53,19 @@ export interface MonsterPreset {
   description: string;
   imageUrl?: string;
 }
+
+export interface CharacterTemplate {
+  id: string;
+  userId: string;
+  name: string;
+  type: 'player' | 'enemy';
+  ac: number;
+  individualHp: number;
+  groupSize: number;
+  attackMod: number;
+  attacksPerCreature: number;
+  description: string;
+  initiative?: number;
+  createdAt: number;
+}
+

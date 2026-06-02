@@ -4,6 +4,8 @@ import { Share2, Globe, Wifi, WifiOff, Copy, Eye, LogOut, ExternalLink, AlertCir
 interface ShareSessionPanelProps {
   isSpectatorMode: boolean;
   sessionCode: string;
+  isBroadcasting: boolean;
+  onToggleBroadcasting: (val: boolean) => void;
   onStartSharing: () => Promise<void>;
   onStopSharing: () => void;
   onExitSpectator: () => void;
@@ -13,6 +15,8 @@ interface ShareSessionPanelProps {
 export default function ShareSessionPanel({
   isSpectatorMode,
   sessionCode,
+  isBroadcasting,
+  onToggleBroadcasting,
   onStartSharing,
   onStopSharing,
   onExitSpectator,
@@ -153,20 +157,37 @@ export default function ShareSessionPanel({
         ) : (
           // Active session: Show session actions and links
           <div className="space-y-3.5">
-            <div className="p-3 bg-[#0c0c0e] border border-emerald-900/30 rounded-lg space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wide flex items-center gap-1">
-                  <Wifi className="w-3.5 h-3.5 animate-pulse" />
-                  Transmissão Ativa
-                </span>
-                <span className="text-[10px] bg-emerald-950/40 text-emerald-400 font-mono font-bold px-1.5 py-0.5 rounded border border-emerald-900/30">
-                  Código: {sessionCode}
-                </span>
+            {isBroadcasting ? (
+              <div className="p-3 bg-[#0c0c0e] border border-emerald-900/30 rounded-lg space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wide flex items-center gap-1">
+                    <Wifi className="w-3.5 h-3.5 animate-pulse" />
+                    Transmissão Ativa
+                  </span>
+                  <span className="text-[10px] bg-emerald-950/40 text-emerald-400 font-mono font-bold px-1.5 py-0.5 rounded border border-emerald-900/30">
+                    Código: {sessionCode}
+                  </span>
+                </div>
+                <p className="text-[10px] text-zinc-550 leading-relaxed">
+                  Qualquer modificação que você realizar nos turnos, vida ou rolagens será transmitida automaticamente para seus espectadores em tempo real.
+                </p>
               </div>
-              <p className="text-[10px] text-zinc-550 leading-relaxed">
-                Qualquer modificação que você realizar nos turnos, vida ou rolagens será transmitida automaticamente para seus espectadores em tempo real.
-              </p>
-            </div>
+            ) : (
+              <div className="p-3 bg-[#0c0c0e] border border-yellow-904/20 rounded-lg space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-yellow-500 uppercase tracking-wide flex items-center gap-1">
+                    <WifiOff className="w-3.5 h-3.5 text-yellow-500" />
+                    Transmissão Desativada / Modo Local
+                  </span>
+                  <span className="text-[10px] bg-yellow-950/30 text-yellow-500 font-mono font-bold px-1.5 py-0.5 rounded border border-yellow-904/20">
+                    Código: {sessionCode}
+                  </span>
+                </div>
+                <p className="text-[10px] text-zinc-500 leading-relaxed font-sans">
+                  Sua sessão está rodando no modo local. Nenhuma modificação será enviada aos espectadores até que você reative a transmissão.
+                </p>
+              </div>
+            )}
 
             {/* Readonly copy URL widget */}
             <div className="flex flex-col space-y-1">
@@ -196,13 +217,25 @@ export default function ShareSessionPanel({
             </div>
 
             <div className="border-t border-[#2d2d35]/65 pt-3">
-              <button
-                onClick={onStopSharing}
-                className="w-full bg-rose-950/15 hover:bg-rose-950/30 text-rose-450 hover:text-rose-400 font-semibold py-2 px-3 rounded-lg text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5 border border-rose-900/40"
-              >
-                <WifiOff className="w-3.5 h-3.5" />
-                Desativar Transmissão
-              </button>
+              {isBroadcasting ? (
+                <button
+                  type="button"
+                  onClick={() => onToggleBroadcasting(false)}
+                  className="w-full bg-rose-950/15 hover:bg-rose-950/30 text-rose-450 hover:text-rose-400 font-semibold py-2 px-3 rounded-lg text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5 border border-rose-900/40"
+                >
+                  <WifiOff className="w-3.5 h-3.5" />
+                  Desativar Transmissão
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onToggleBroadcasting(true)}
+                  className="w-full bg-emerald-950/15 hover:bg-emerald-950/30 text-emerald-400 font-semibold py-2 px-3 rounded-lg text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5 border border-emerald-900/40"
+                >
+                  <Wifi className="w-3.5 h-3.5 animate-pulse" />
+                  Ativar Transmissão Online
+                </button>
+              )}
             </div>
           </div>
         )}
