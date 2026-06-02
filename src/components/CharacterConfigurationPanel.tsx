@@ -36,8 +36,34 @@ export default function CharacterConfigurationPanel({
   const [charAttacks, setCharAttacks] = useState<number>(1);
   const [charDesc, setCharDesc] = useState('');
   const [charInitiative, setCharInitiative] = useState<string>(''); // Pre-set initiative or roll
+  const [charInitiativeMod, setCharInitiativeMod] = useState<number>(0);
+  const [charInitiativeRollMode, setCharInitiativeRollMode] = useState<'normal' | 'advantage' | 'disadvantage'>('normal');
+  const [charAttacksList, setCharAttacksList] = useState<any[]>([
+    { name: 'Ataque Padrão', attackMod: 4, damageDice: '1d6', damageMod: 2 }
+  ]);
 
   const [errorMsg, setErrorMsg] = useState('');
+
+  const handleAddCharAttackRow = () => {
+    setCharAttacksList(prev => [
+      ...prev,
+      { name: `Ataque ${prev.length + 1}`, attackMod: charAttackMod || 4, damageDice: '1d6', damageMod: 2 }
+    ]);
+  };
+
+  const handleRemoveCharAttackRow = (index: number) => {
+    if (charAttacksList.length <= 1) return;
+    setCharAttacksList(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleUpdateCharAttackRow = (index: number, field: string, value: any) => {
+    setCharAttacksList(prev => prev.map((item, i) => {
+      if (i === index) {
+        return { ...item, [field]: value };
+      }
+      return item;
+    }));
+  };
 
   // Sincronizar banco de personagens do Firestore em tempo real
   useEffect(() => {
@@ -96,6 +122,11 @@ export default function CharacterConfigurationPanel({
     setCharAttacks(1);
     setCharDesc('');
     setCharInitiative('');
+    setCharInitiativeMod(0);
+    setCharInitiativeRollMode('normal');
+    setCharAttacksList([
+      { name: 'Ataque Padrão', attackMod: 4, damageDice: '1d6', damageMod: 2 }
+    ]);
     setErrorMsg('');
   };
 
@@ -111,6 +142,7 @@ export default function CharacterConfigurationPanel({
     }
 
     const docId = isEditing || Math.random().toString(36).substring(2, 9);
+    const finalAttacksList = charAttacksList.length > 0 ? charAttacksList : [{ name: 'Ataque Padrão', attackMod: charAttackMod, damageDice: '1d6', damageMod: 2 }];
     const newChar: CharacterTemplate = {
       id: docId,
       userId,
@@ -119,9 +151,12 @@ export default function CharacterConfigurationPanel({
       ac: charAc,
       individualHp: charHp,
       groupSize: charType === 'player' ? 1 : charGroupSize,
-      attackMod: charAttackMod,
+      attackMod: finalAttacksList[0]?.attackMod ?? charAttackMod,
       attacksPerCreature: charAttacks,
       description: charDesc.trim(),
+      initiativeMod: charInitiativeMod,
+      initiativeRollMode: charInitiativeRollMode,
+      attacksList: finalAttacksList,
       createdAt: Date.now()
     };
 
@@ -142,9 +177,14 @@ export default function CharacterConfigurationPanel({
     setCharAc(char.ac);
     setCharHp(char.individualHp);
     setCharGroupSize(char.groupSize || 1);
-    setCharAttackMod(char.attackMod);
-    setCharAttacks(char.attacksPerCreature);
+    setCharAttackMod(char.attacksList && char.attacksList[0] ? char.attacksList[0].attackMod : char.attackMod);
+    setCharAttacks(char.attacksPerCreature || 1);
     setCharDesc(char.description || '');
+    setCharInitiativeMod(char.initiativeMod || 0);
+    setCharInitiativeRollMode(char.initiativeRollMode || 'normal');
+    setCharAttacksList(char.attacksList && char.attacksList.length > 0 ? char.attacksList : [
+      { name: 'Ataque Padrão', attackMod: char.attackMod, damageDice: '1d6', damageMod: 2 }
+    ]);
     setActiveFormView(true);
   };
 
@@ -164,25 +204,56 @@ export default function CharacterConfigurationPanel({
   const handleInjectIntoCombat = (char: CharacterTemplate, customQty?: number) => {
     const qty = char.type === 'player' ? 1 : (customQty || char.groupSize || 1);
     const finalHp = char.individualHp * qty;
-    // Roll baseline initiative for injection
-    const rolledInit = charInitiative === ''
-      ? Math.floor(Math.random() * 20) + 1
-      : parseInt(charInitiative, 10);
+
+    // Roll baseline initiative for injection based on character settings or preset
+    const rollMode = char.initiativeRollMode || 'normal';
+    const initMod = char.initiativeMod !== undefined ? char.initiativeMod : (char.initiative || 0);
+    
+    let rolledInit = 10;
+    let breakdown = `d20`;
+
+    if (charInitiative !== '') {
+      rolledInit = parseInt(charInitiative, 10);
+      breakdown = `definida manualmente`;
+    } else {
+      const roll1 = Math.floor(Math.random() * 20) + 1;
+      let finalRoll = roll1;
+      breakdown = `[${roll1}]`;
+
+      if (rollMode === 'advantage') {
+        const roll2 = Math.floor(Math.random() * 20) + 1;
+        finalRoll = Math.max(roll1, roll2);
+        breakdown = `Vantagem d20 [${roll1}, ${roll2}] (maior: ${finalRoll})`;
+      } else if (rollMode === 'disadvantage') {
+        const roll2 = Math.floor(Math.random() * 20) + 1;
+        finalRoll = Math.min(roll1, roll2);
+        breakdown = `Desvantagem d20 [${roll1}, ${roll2}] (menor: ${finalRoll})`;
+      }
+      rolledInit = finalRoll + initMod;
+    }
+
+    const calculatedMaxHp = finalHp;
+    const finalAttacksList = char.attacksList && char.attacksList.length > 0 
+      ? char.attacksList 
+      : [{ name: 'Ataque Padrão', attackMod: char.attackMod, damageDice: '1d6', damageMod: 2 }];
 
     onAddCombatant({
       name: char.type === 'enemy' && qty > 1 ? `${char.name} x${qty}` : char.name,
       type: char.type,
       initiative: isNaN(rolledInit) ? 10 : rolledInit,
-      currentHp: finalHp,
-      maxHp: finalHp,
+      initiativeMod: initMod,
+      initiativeRollMode: rollMode,
+      currentHp: calculatedMaxHp,
+      maxHp: calculatedMaxHp,
       individualHp: char.individualHp,
       groupSize: qty,
       ac: char.ac,
-      attackMod: char.attackMod,
-      attacksPerCreature: char.attacksPerCreature
+      attackMod: finalAttacksList[0]?.attackMod ?? char.attackMod,
+      attacksPerCreature: char.attacksPerCreature || 1,
+      attacksList: finalAttacksList
     });
 
-    onLog(`Personagem importado: "${char.name}" injetado na iniciativa em tempo real. HP: ${finalHp}, CA: ${char.ac}`, 'setup');
+    onLog(`Personagem importado: "${char.name}" com ${qty} unidade(s) injetado na iniciativa em tempo real. HP: ${finalHp}, CA: ${char.ac} (Iniciativa auto-rolada: ${rolledInit} | ${breakdown})`, 'setup');
   };
 
   return (
@@ -352,48 +423,134 @@ export default function CharacterConfigurationPanel({
                 </div>
               </div>
 
-              {/* Attack settings */}
-              <div className="grid grid-cols-2 gap-3">
+              {/* Initiative settings */}
+              <div className="grid grid-cols-2 gap-3 border-t border-[#2d2d35]/35 pt-2">
                 <div>
-                  <label className="block text-[10px] font-semibold text-zinc-500 tracking-wider uppercase mb-1">Bônus de Ataque</label>
+                  <label className="block text-[10px] font-semibold text-zinc-500 tracking-wider uppercase mb-1">Mod. Iniciativa</label>
                   <input
                     type="number"
-                    value={charAttackMod}
-                    onChange={(e) => setCharAttackMod(parseInt(e.target.value, 10) || 0)}
+                    value={charInitiativeMod}
+                    onChange={(e) => setCharInitiativeMod(parseInt(e.target.value, 10) || 0)}
                     className="w-full bg-[#0c0c0e] border border-[#2d2d35] focus:border-amber-500 rounded-lg py-1.5 px-3 text-xs text-zinc-200 outline-none font-mono"
-                    id="char-attack-mod"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-[10px] font-semibold text-zinc-500 tracking-wider uppercase mb-1">Quantidades Ataques</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="6"
-                    value={charAttacks}
-                    onChange={(e) => setCharAttacks(Math.min(6, Math.max(1, parseInt(e.target.value, 10) || 1)))}
-                    className="w-full bg-[#0c0c0e] border border-[#2d2d35] focus:border-amber-500 rounded-lg py-1.5 px-3 text-xs text-zinc-200 outline-none font-mono"
-                    id="char-attacks"
-                  />
+                  <label className="block text-[10px] font-semibold text-zinc-500 tracking-wider uppercase mb-1">Modo de Iniciativa</label>
+                  <select
+                    value={charInitiativeRollMode}
+                    onChange={(e) => setCharInitiativeRollMode(e.target.value as any)}
+                    className="w-full bg-[#0c0c0e] border border-[#2d2d35] focus:border-amber-500 rounded-lg py-1.5 px-2 text-xs text-zinc-200 outline-none font-sans"
+                  >
+                    <option value="normal">Normal</option>
+                    <option value="advantage">Vantagem</option>
+                    <option value="disadvantage">Desvantagem</option>
+                  </select>
                 </div>
               </div>
 
-              {/* Baseline Group size (only for enemies) */}
-              {charType === 'enemy' && (
-                <div>
-                  <label className="block text-[10px] font-semibold text-zinc-500 tracking-wider uppercase mb-1">Contagem Padrão de Criaturas</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="10"
-                    value={charGroupSize}
-                    onChange={(e) => setCharGroupSize(Math.max(1, parseInt(e.target.value, 10) || 1))}
-                    className="w-full bg-[#0c0c0e] border border-[#2d2d35] focus:border-amber-500 rounded-lg py-1.5 px-3 text-xs text-zinc-200 outline-none font-mono"
-                    id="char-group-size"
-                  />
+              {/* Multiple Attacks List */}
+              <div className="space-y-3.5 border-t border-[#2d2d35]/35 pt-3">
+                <div className="flex items-center justify-between">
+                  <span className="block text-[10px] font-bold text-amber-500 uppercase tracking-wider">
+                    ⚔️ Perfis de Ataque ({charAttacksList.length})
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleAddCharAttackRow}
+                    className="text-[9px] font-bold text-amber-550 hover:text-amber-400 bg-[#1c1c24] hover:bg-[#282832] border border-[#2d2d35] px-2 py-0.5 rounded flex items-center gap-0.5"
+                  >
+                    + Novo
+                  </button>
                 </div>
-              )}
+
+                <div className="space-y-2.5 max-h-56 overflow-y-auto pr-1">
+                  {charAttacksList.map((attack, index) => (
+                    <div key={index} className="bg-[#0c0c0e]/40 border border-[#2d2d35]/50 rounded-lg p-2.5 space-y-2">
+                      <div className="flex items-center justify-between gap-1.5 border-b border-[#2d2d35]/30 pb-1">
+                        <input
+                          type="text"
+                          required
+                          value={attack.name}
+                          onChange={(e) => handleUpdateCharAttackRow(index, 'name', e.target.value)}
+                          placeholder="Nome do ataque (ex: Mordida)"
+                          className="bg-transparent text-xs font-bold text-zinc-300 outline-none w-full placeholder:text-zinc-700"
+                        />
+                        {charAttacksList.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveCharAttackRow(index)}
+                            className="text-zinc-500 hover:text-rose-450 p-0.5 transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-1.5">
+                        <div>
+                          <span className="block text-[8px] font-bold text-zinc-500 uppercase mb-0.5">Mod Acerto</span>
+                          <input
+                            type="number"
+                            value={attack.attackMod}
+                            onChange={(e) => handleUpdateCharAttackRow(index, 'attackMod', parseInt(e.target.value, 10) || 0)}
+                            className="w-full bg-[#0c0c0e] border border-[#2d2d35] rounded py-0.5 px-1 text-xs font-mono text-zinc-300 outline-none"
+                          />
+                        </div>
+
+                        <div>
+                          <span className="block text-[8px] font-bold text-zinc-500 uppercase mb-0.5">Dado Dano</span>
+                          <input
+                            type="text"
+                            value={attack.damageDice}
+                            onChange={(e) => handleUpdateCharAttackRow(index, 'damageDice', e.target.value)}
+                            placeholder="ex: 1d6"
+                            className="w-full bg-[#0c0c0e] border border-[#2d2d35] rounded py-0.5 px-1 text-xs font-mono text-zinc-300 outline-none"
+                          />
+                        </div>
+
+                        <div>
+                          <span className="block text-[8px] font-bold text-zinc-500 uppercase mb-0.5">Bônus Dano</span>
+                          <input
+                            type="number"
+                            value={attack.damageMod}
+                            onChange={(e) => handleUpdateCharAttackRow(index, 'damageMod', parseInt(e.target.value, 10) || 0)}
+                            className="w-full bg-[#0c0c0e] border border-[#2d2d35] rounded py-0.5 px-1 text-xs font-mono text-zinc-300 outline-none"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 pt-1 border-t border-[#2d2d35]/30">
+                  <div>
+                    <label className="block text-[10px] font-semibold text-zinc-500 tracking-wider uppercase mb-1">Ataques por Turno</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="6"
+                      value={charAttacks}
+                      onChange={(e) => setCharAttacks(Math.min(6, Math.max(1, parseInt(e.target.value, 10) || 1)))}
+                      className="w-full bg-[#0c0c0e] border border-[#2d2d35] focus:border-amber-500 rounded-lg py-1.5 px-3 text-xs text-zinc-200 outline-none font-mono"
+                    />
+                  </div>
+
+                  {charType === 'enemy' && (
+                    <div>
+                      <label className="block text-[10px] font-semibold text-zinc-500 tracking-wider uppercase mb-1 font-sans">Contagem de Grupo</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="10"
+                        value={charGroupSize}
+                        onChange={(e) => setCharGroupSize(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                        className="w-full bg-[#0c0c0e] border border-[#2d2d35] focus:border-amber-500 rounded-lg py-1.5 px-2 text-xs text-zinc-200 outline-none font-mono"
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
 
               {/* Description Notes */}
               <div>
@@ -494,7 +651,7 @@ export default function CharacterConfigurationPanel({
                   </div>
 
                   {/* Dynamic stats row */}
-                  <div className="flex items-center justify-between border-t border-[#2d2d35]/50 mt-2.5 pt-2">
+                  <div className="flex items-center justify-between border-t border-[#2d2d35]/50 mt-2.5 pt-2 mb-1">
                     <div className="flex items-center gap-3.5 text-[10px] text-zinc-450 font-mono">
                       <span className="flex items-center gap-0.5">
                         <Shield className="w-2.5 h-2.5 text-amber-500" />
@@ -504,20 +661,38 @@ export default function CharacterConfigurationPanel({
                         <Heart className="w-2.5 h-2.5 text-rose-500" />
                         HP: {char.individualHp} {char.type === 'enemy' && char.groupSize > 1 ? `x${char.groupSize}` : ''}
                       </span>
-                      <span className="flex items-center gap-0.5 text-[9px] text-zinc-550">
-                        Atq: {char.attackMod >= 0 ? '+' : ''}{char.attackMod} {char.attacksPerCreature > 1 ? `(${char.attacksPerCreature} atqs)` : ''}
-                      </span>
+                      {char.initiativeMod !== undefined && char.initiativeMod !== 0 && (
+                        <span className="flex items-center gap-0.5" title="Modificador de Iniciativa">
+                          ⚡ Ini: {char.initiativeMod >= 0 ? '+' : ''}{char.initiativeMod}
+                          {char.initiativeRollMode && char.initiativeRollMode !== 'normal' && (
+                            <span className="text-[8px] text-amber-500 uppercase ml-0.5 font-bold">
+                              ({char.initiativeRollMode === 'advantage' ? 'Vant' : 'Desv'})
+                            </span>
+                          )}
+                        </span>
+                      )}
                     </div>
 
                     {/* Inject Button */}
                     <button
                       onClick={() => handleInjectIntoCombat(char)}
-                      className="py-1 px-2 rounded bg-amber-600 hover:bg-amber-500 text-black text-[9px] font-bold uppercase flex items-center gap-0.5 tracking-wider hover:scale-[1.03] transition-all shadow-sm"
+                      className="py-1 px-2 rounded bg-amber-600 hover:bg-amber-500 text-black text-[9px] font-bold uppercase flex items-center gap-0.5 tracking-wider hover:scale-[1.03] transition-all shadow-sm cursor-pointer"
                     >
                       <Play className="w-2.5 h-2.5 fill-black" />
                       Injetar +
                     </button>
                   </div>
+
+                  {/* Custom attacks list overview */}
+                  {char.attacksList && char.attacksList.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1 border-t border-[#2d2d35]/30 pt-1.5 pb-0.5">
+                      {char.attacksList.map((atk, idx) => (
+                        <span key={idx} className="bg-[#111115] text-[8px] text-zinc-400 font-mono px-1 rounded border border-[#2d2d35]" title={`${atk.name}: d20+${atk.attackMod} para acertar. Dano: ${atk.damageDice}+${atk.damageMod}`}>
+                          ⚔️ {atk.name} (+{atk.attackMod} | {atk.damageDice}+{atk.damageMod})
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

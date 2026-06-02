@@ -60,6 +60,7 @@ export default function App() {
   const [hasStarted, setHasStarted] = useState<boolean>(false);
 
   // UI Helpers
+  const [mobileActiveView, setMobileActiveView] = useState<'queue' | 'deck'>('queue');
   const [hpInputValues, setHpInputValues] = useState<Record<string, string>>({});
   const [filterType, setFilterType] = useState<'all' | 'players' | 'enemies'>('all');
   const [activeTab, setActiveTab] = useState<'quick-combat' | 'char-library'>('quick-combat');
@@ -71,6 +72,13 @@ export default function App() {
   const [selectedTargetId, setSelectedTargetId] = useState<string>('');
   const [customTargetAc, setCustomTargetAc] = useState<string>('10');
   const [attackerCountInput, setAttackerCountInput] = useState<number>(1);
+  const [selectedAttackIndex, setSelectedAttackIndex] = useState<number>(0);
+  const [selectedAttackRollMode, setSelectedAttackRollMode] = useState<'normal' | 'advantage' | 'disadvantage'>('normal');
+
+  // Quick Dice Roller States
+  const [quickMod, setQuickMod] = useState<number>(0);
+  const [customDiceFormula, setCustomDiceFormula] = useState<string>('');
+  const [quickRollVal, setQuickRollVal] = useState<{ die: string, rollText: string, total: number } | null>(null);
 
   // Spectator Session State
   const [isSpectatorMode, setIsSpectatorMode] = useState<boolean>(false);
@@ -434,9 +442,12 @@ export default function App() {
         type: newCombatant.type,
         ac: newCombatant.ac || 10,
         individualHp: newCombatant.individualHp || 10,
-        groupSize: newCombatant.groupSize || 1,
+        groupSize: 1, // Não salvar a quantidade (forçar 1) conforme solicitado pelo usuário
         attackMod: newCombatant.attackMod || 0,
         attacksPerCreature: newCombatant.attacksPerCreature || 1,
+        initiativeMod: newCombatant.initiativeMod || 0,
+        initiativeRollMode: newCombatant.initiativeRollMode || 'normal',
+        attacksList: newCombatant.attacksList || [],
         description: `Adicionado em ${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`,
         isAutoSaved: true,
         createdAt: Date.now()
@@ -691,27 +702,95 @@ export default function App() {
     const targetAcValue = targetPlayer ? targetPlayer.ac : customAc;
     const targetNameStr = targetPlayer ? targetPlayer.name : `Alvo de CA ${customAc}`;
 
+    // Selected attack configuration
+    const activeAttack = (attacker.attacksList && attacker.attacksList[selectedAttackIndex]) || {
+      name: 'Ataque Padrão',
+      attackMod: attacker.attackMod,
+      damageDice: '1d6',
+      damageMod: 2
+    };
+
     const totalAttacksCount = attackerCount * attacker.attacksPerCreature;
     const rolls: AttackRollResult['rolls'] = [];
 
+    // Helper for rolling damage dice
+    const rollDiceText = (diceStr: string, isCrit: boolean): { total: number, rollDetails: string } => {
+      const cleanStr = diceStr.trim().toLowerCase();
+      const match = cleanStr.match(/^(\d+)d(\d+)/);
+      if (match) {
+        let diceCount = parseInt(match[1], 10);
+        const dieSides = parseInt(match[2], 10);
+        if (isCrit) {
+          diceCount = diceCount * 2;
+        }
+        let sum = 0;
+        const rollsVal: number[] = [];
+        for (let i = 0; i < diceCount; i++) {
+          const r = Math.floor(Math.random() * dieSides) + 1;
+          sum += r;
+          rollsVal.push(r);
+        }
+        return {
+          total: sum,
+          rollDetails: `${diceCount}d${dieSides} [${rollsVal.join('+')}]`
+        };
+      }
+      const flat = parseInt(cleanStr, 10);
+      if (!isNaN(flat)) {
+        return { total: flat, rollDetails: `${flat}` };
+      }
+      // fallback
+      const rFallback = Math.floor(Math.random() * 6) + 1;
+      return { total: rFallback, rollDetails: `1d6 [${rFallback}] (inválido)` };
+    };
+
     for (let enemyIndex = 1; enemyIndex <= attackerCount; enemyIndex++) {
       for (let attackIdx = 1; attackIdx <= attacker.attacksPerCreature; attackIdx++) {
-        const dieRoll = Math.floor(Math.random() * 20) + 1;
-        const total = dieRoll + attacker.attackMod;
+        // Roll d20 based on advantage / disadvantage state
+        const roll1 = Math.floor(Math.random() * 20) + 1;
+        let dieRoll = roll1;
+        let rollBreakdown = `d20 [${roll1}]`;
+
+        if (selectedAttackRollMode === 'advantage') {
+          const roll2 = Math.floor(Math.random() * 20) + 1;
+          dieRoll = Math.max(roll1, roll2);
+          rollBreakdown = `Vantagem d20 [${roll1}, ${roll2}] (maior: ${dieRoll})`;
+        } else if (selectedAttackRollMode === 'disadvantage') {
+          const roll2 = Math.floor(Math.random() * 20) + 1;
+          dieRoll = Math.min(roll1, roll2);
+          rollBreakdown = `Desvantagem d20 [${roll1}, ${roll2}] (menor: ${dieRoll})`;
+        }
+
+        const total = dieRoll + activeAttack.attackMod;
         const isCritSuccess = dieRoll === 20;
         const isCritFailure = dieRoll === 1;
         const isHit = isCritSuccess || (!isCritFailure && total >= targetAcValue);
+
+        // Roll damage!
+        let damageTotal = 0;
+        let damageRollText = '';
+        if (isHit) {
+          const diceResult = rollDiceText(activeAttack.damageDice || '1d6', isCritSuccess);
+          damageTotal = Math.max(0, diceResult.total + (activeAttack.damageMod || 0));
+          damageRollText = `${diceResult.rollDetails} + Mod ${activeAttack.damageMod !== undefined ? activeAttack.damageMod : 2} = ${damageTotal}`;
+        }
 
         rolls.push({
           creatureIndex: enemyIndex,
           attackIndex: attackIdx,
           dieRoll,
-          modifier: attacker.attackMod,
+          rawRoll1: roll1,
+          rawRoll2: selectedAttackRollMode !== 'normal' ? dieRoll : undefined,
+          rollMode: selectedAttackRollMode,
+          modifier: activeAttack.attackMod,
           total,
           isCritSuccess,
           isCritFailure,
           targetAc: targetAcValue,
-          isHit
+          isHit,
+          attackName: activeAttack.name,
+          damageRollText,
+          damageTotal
         });
       }
     }
@@ -730,59 +809,205 @@ export default function App() {
     setAttackConfigureId(null);
 
     const hits = rolls.filter(r => r.isHit).length;
-    let mainLog = `Combate: ${attackerCount}x "${attacker.name}" contra "${targetNameStr}" (CA ${targetAcValue}). Total de acertos: ${hits}/${totalAttacksCount}.`;
+    let mainLog = `Combate: ${attackerCount}x "${attacker.name}" atacando "${targetNameStr}" (CA ${targetAcValue}) usando "${activeAttack.name}". Acertos: ${hits}/${totalAttacksCount}.`;
     
     const rollDetails = rolls.map(r => {
-      let suffix = r.isCritSuccess ? "Crítico 💥" : r.isCritFailure ? "Falha ⚠️" : r.isHit ? "✓" : "✗";
-      return `Criatura ${r.creatureIndex}(Atq ${r.attackIndex}): ${r.dieRoll}+${r.modifier}=${r.total} [${suffix}]`;
+      let suffix = r.isCritSuccess ? "Crítico 💥" : r.isCritFailure ? "Fumble ⚠️" : r.isHit ? "Acertou ✓" : "Errou ✗";
+      let dmgText = r.isHit ? ` (Dano: ${r.damageTotal} | ${r.damageRollText})` : '';
+      return `Criatura ${r.creatureIndex}(Atq ${r.attackIndex}): d20=${r.dieRoll}+mod ${r.modifier >= 0 ? '+' : ''}${r.modifier}=${r.total} [${suffix}]${dmgText}`;
     }).join(' | ');
 
     addLog(`${mainLog} Detalhes: ${rollDetails}`, 'roll', attacker.name);
   };
 
-  const loadDemoEncounter = () => {
-    handleClearAll();
+  const handleGroupDamageRollConfigured = (
+    attacker: Combatant,
+    attackerCount: number
+  ) => {
+    // Selected attack configuration
+    const activeAttack = (attacker.attacksList && attacker.attacksList[selectedAttackIndex]) || {
+      name: 'Ataque Padrão',
+      attackMod: attacker.attackMod,
+      damageDice: '1d6',
+      damageMod: 2
+    };
+
+    const totalAttacksCount = attackerCount * attacker.attacksPerCreature;
+    const rollsList: { rollDetails: string; total: number }[] = [];
+    let damageSum = 0;
+
+    const rollDiceText = (diceStr: string): { total: number, rollDetails: string } => {
+      const cleanStr = diceStr.trim().toLowerCase();
+      const match = cleanStr.match(/^(\d+)d(\d+)/);
+      if (match) {
+        let diceCount = parseInt(match[1], 10);
+        const dieSides = parseInt(match[2], 10);
+        let sum = 0;
+        const rollsVal: number[] = [];
+        for (let i = 0; i < diceCount; i++) {
+          const r = Math.floor(Math.random() * dieSides) + 1;
+          sum += r;
+          rollsVal.push(r);
+        }
+        return {
+          total: sum,
+          rollDetails: `${diceCount}d${dieSides}[${rollsVal.join('+')}]`
+        };
+      }
+      const flat = parseInt(cleanStr, 10);
+      if (!isNaN(flat)) {
+        return { total: flat, rollDetails: `${flat}` };
+      }
+      const rFallback = Math.floor(Math.random() * 6) + 1;
+      return { total: rFallback, rollDetails: `1d6[${rFallback}]` };
+    };
+
+    for (let enemyIndex = 1; enemyIndex <= attackerCount; enemyIndex++) {
+      for (let attackIdx = 1; attackIdx <= attacker.attacksPerCreature; attackIdx++) {
+        const diceResult = rollDiceText(activeAttack.damageDice || '1d6');
+        const modifiedTotal = Math.max(0, diceResult.total + (activeAttack.damageMod || 0));
+        damageSum += modifiedTotal;
+        rollsList.push({
+          rollDetails: diceResult.rollDetails,
+          total: modifiedTotal
+        });
+      }
+    }
+
+    const attackDesc = activeAttack.name;
+    const isMultiUnit = totalAttacksCount > 1;
+
+    let textLog = `🩸 ROLAGEM DE DANO: ${attacker.name} rola o dano de ${attackDesc} (${activeAttack.damageDice}${activeAttack.damageMod >= 0 ? '+' : ''}${activeAttack.damageMod})`;
+    if (isMultiUnit) {
+      textLog += ` para ${totalAttacksCount} acertos: `;
+      const rollsStr = rollsList.map((r, i) => `[#${i + 1}] ${r.rollDetails}${activeAttack.damageMod >= 0 ? '+' : ''}${activeAttack.damageMod}=${r.total}`).join(', ');
+      textLog += `${rollsStr}. TOTAL: ${damageSum} Dano!`;
+    } else {
+      const single = rollsList[0];
+      textLog += `: ${single.rollDetails}${activeAttack.damageMod >= 0 ? '+' : ''}${activeAttack.damageMod} = ${single.total} Dano!`;
+    }
+
+    addLog(textLog, 'damage', attacker.name);
+
+    const mockRolls = rollsList.map((r, idx) => {
+      const enemyIndex = Math.ceil((idx + 1) / attacker.attacksPerCreature);
+      const attackIndex = ((idx) % attacker.attacksPerCreature) + 1;
+      return {
+        creatureIndex: enemyIndex,
+        attackIndex: attackIndex,
+        dieRoll: 10,
+        modifier: activeAttack.attackMod,
+        total: 10 + activeAttack.attackMod,
+        isCritSuccess: false,
+        isCritFailure: false,
+        targetAc: 10,
+        isHit: true,
+        attackName: activeAttack.name,
+        damageRollText: r.rollDetails + (activeAttack.damageMod >= 0 ? ` + Mod ${activeAttack.damageMod}` : ` - Mod ${Math.abs(activeAttack.damageMod)}`),
+        damageTotal: r.total
+      };
+    });
+
+    setCurrentRoll({
+      id: Math.random().toString(36).substring(2, 9),
+      attackerName: `${attacker.name} (Apenas Dano)`,
+      rolls: mockRolls,
+      timestamp: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
+      targetName: 'Apenas Dano Rápido'
+    });
+    setAttackConfigureId(null);
+  };
+
+  const handleQuickDieRoll = (sides: number) => {
+    const roll = Math.floor(Math.random() * sides) + 1;
+    const total = roll + quickMod;
+    const dStr = `d${sides}`;
+    const rollText = `${dStr} [${roll}] ${quickMod >= 0 ? '+' : ''}${quickMod}`;
     
-    handleAddCombatant({
-      name: "Arthur Pendragon (Guerreiro)",
-      type: "player",
-      initiative: 18,
-      currentHp: 32,
-      maxHp: 32,
-      individualHp: 32,
-      groupSize: 1,
-      ac: 17,
-      attackMod: 5,
-      attacksPerCreature: 1
+    setQuickRollVal({
+      die: dStr,
+      rollText,
+      total
     });
 
-    handleAddCombatant({
-      name: "Orcs Selvagens",
-      type: "enemy",
-      initiative: 14,
-      currentHp: 45,
-      maxHp: 45,
-      individualHp: 15,
-      groupSize: 3,
-      ac: 13,
-      attackMod: 5,
-      attacksPerCreature: 1
-    });
+    addLog(`🎲 DADOS: Rolou d${sides} (Resultado: ${roll}) ${quickMod >= 0 ? '+' : ''}${quickMod} = Total ${total}!`, 'info', 'Dados');
+  };
 
-    handleAddCombatant({
-      name: "Goblin Batedor",
-      type: "enemy",
-      initiative: 10,
-      currentHp: 7,
-      maxHp: 7,
-      individualHp: 7,
-      groupSize: 1,
-      ac: 15,
-      attackMod: 4,
-      attacksPerCreature: 1
-    });
+  const handleCustomFormulaRoll = (formula: string) => {
+    const cleanStr = formula.trim().toLowerCase();
+    const match = cleanStr.match(/^(\d+)d(\d+)(.*)/);
+    
+    let sum = 0;
+    let details = '';
+    let hasRolled = false;
 
-    setHasStarted(false);
+    if (match) {
+      const diceCount = parseInt(match[1], 10);
+      const dieSides = parseInt(match[2], 10);
+      const suffix = match[3] || '';
+      
+      const rollsVal: number[] = [];
+      for (let i = 0; i < diceCount; i++) {
+        const r = Math.floor(Math.random() * dieSides) + 1;
+        sum += r;
+        rollsVal.push(r);
+      }
+      
+      let modifier = 0;
+      const modMatch = suffix.match(/([+-])\s*(\d+)/);
+      if (modMatch) {
+        const sign = modMatch[1] === '+' ? 1 : -1;
+        modifier = sign * parseInt(modMatch[2], 10);
+      }
+      
+      const computedTotal = sum + modifier;
+      details = `${diceCount}d${dieSides}[${rollsVal.join('+')}]${modifier >= 0 ? '+' : ''}${modifier}`;
+      
+      setQuickRollVal({
+        die: formula.toUpperCase(),
+        rollText: details,
+        total: computedTotal
+      });
+      hasRolled = true;
+      addLog(`🎲 DADOS: Rolou ${formula.toUpperCase()} (Resultado: ${details}) = Total ${computedTotal}!`, 'info', 'Dados');
+    } else {
+      const singleMatch = cleanStr.match(/^d(\d+)(.*)/);
+      if (singleMatch) {
+         const dieSides = parseInt(singleMatch[1], 10);
+         const suffix = singleMatch[2] || '';
+         const r = Math.floor(Math.random() * dieSides) + 1;
+         let modifier = 0;
+         const modMatch = suffix.match(/([+-])\s*(\d+)/);
+         if (modMatch) {
+           const sign = modMatch[1] === '+' ? 1 : -1;
+           modifier = sign * parseInt(modMatch[2], 10);
+         }
+         const computedTotal = r + modifier;
+         details = `d${dieSides}[${r}]${modifier >= 0 ? '+' : ''}${modifier}`;
+         
+         setQuickRollVal({
+           die: formula.toUpperCase(),
+           rollText: details,
+           total: computedTotal
+         });
+         hasRolled = true;
+         addLog(`🎲 DADOS: Rolou ${formula.toUpperCase()} (Resultado: ${details}) = Total ${computedTotal}!`, 'info', 'Dados');
+      }
+    }
+
+    if (!hasRolled) {
+      const sides = 20;
+      const r = Math.floor(Math.random() * sides) + 1;
+      const total = r + quickMod;
+      const dStr = `d20`;
+      const rollText = `d20 [${r}] ${quickMod >= 0 ? '+' : ''}${quickMod}`;
+      setQuickRollVal({
+        die: dStr,
+        rollText,
+        total
+      });
+      addLog(`🎲 DADOS: Fórmula Inválida. Rolou d20 padrão (Resultado: ${r}) ${quickMod >= 0 ? '+' : ''}${quickMod} = Total ${total}!`, 'info', 'Dados');
+    }
   };
 
   const handleLoadCombatLibrary = (freshCombatants: Combatant[], name: string) => {
@@ -1093,11 +1318,39 @@ export default function App() {
         </div>
       </header>
 
+      {/* Mobile Sticky Tab Selector */}
+      <div className="lg:hidden bg-[#16161a]/95 backdrop-blur-md border-b border-[#2d2d35] sticky top-[72px] z-40 px-4 py-2.5 flex gap-2">
+        <button
+          type="button"
+          onClick={() => setMobileActiveView('queue')}
+          className={`flex-1 py-2.5 px-3 rounded-xl font-bold uppercase tracking-wider text-[11px] transition-all flex items-center justify-center gap-1.5 border cursor-pointer ${
+            mobileActiveView === 'queue'
+              ? 'bg-amber-600 border-amber-500 text-black shadow-lg shadow-amber-600/10'
+              : 'bg-[#111115] border-[#2d2d35] text-zinc-400'
+          }`}
+        >
+          <Swords className="w-3.5 h-3.5" />
+          Fila de Iniciativa ({combatants.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setMobileActiveView('deck')}
+          className={`flex-1 py-2.5 px-3 rounded-xl font-bold uppercase tracking-wider text-[11px] transition-all flex items-center justify-center gap-1.5 border cursor-pointer ${
+            mobileActiveView === 'deck'
+              ? 'bg-amber-600 border-amber-500 text-black shadow-lg shadow-amber-600/10'
+              : 'bg-[#111115] border-[#2d2d35] text-zinc-400'
+          }`}
+        >
+          <Settings className="w-3.5 h-3.5 text-zinc-400" />
+          Controles & Add
+        </button>
+      </div>
+
       {/* 2. Main Grid Deck */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6" id="main-content-grid">
         
         {/* LEFT COLUMN: ACTIVE MONSTER/PC QUEUE (SPAN 8) */}
-        <div className="lg:col-span-8 flex flex-col space-y-4">
+        <div className={`lg:col-span-8 flex flex-col space-y-4 ${mobileActiveView === 'queue' ? 'flex' : 'hidden lg:flex'}`}>
           
           <div className="bg-[#111115] border border-[#2d2d35] rounded-xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 shadow-md" id="toolbar">
             <div className="flex items-center gap-2">
@@ -1138,23 +1391,14 @@ export default function App() {
                 </button>
               </div>
 
-              {!isSpectatorMode && (
-                combatants.length === 0 ? (
-                  <button
-                    onClick={loadDemoEncounter}
-                    className="bg-[#0c0c0e] hover:bg-[#16161a] text-amber-500 hover:text-amber-400 px-3 py-1.5 text-[11px] font-semibold rounded-lg border border-[#2d2d35] transition-all cursor-pointer"
-                  >
-                    Exemplo d20
-                  </button>
-                ) : (
-                  <button
-                    onClick={handleClearAll}
-                    className="bg-rose-950/20 hover:bg-rose-955/40 text-rose-455 px-3 py-1.5 text-[11px] font-semibold rounded-lg border border-rose-900/40 transition-all cursor-pointer flex items-center gap-1"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                    Resetar Mesa
-                  </button>
-                )
+              {!isSpectatorMode && combatants.length > 0 && (
+                <button
+                  onClick={handleClearAll}
+                  className="bg-rose-950/20 hover:bg-rose-955/40 text-rose-455 px-3 py-1.5 text-[11px] font-semibold rounded-lg border border-rose-900/40 transition-all cursor-pointer flex items-center gap-1"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  Resetar Mesa
+                </button>
               )}
             </div>
           </div>
@@ -1172,16 +1416,10 @@ export default function App() {
                     : "Sua mesa de iniciativa de D&D está limpa. Adicione personagens ou monstros ao combate no painel à direita, ou importe do seu catálogo de personagens cadastrados!"}
                 </p>
                 {!isSpectatorMode && (
-                  <div className="flex gap-2.5">
-                    <button
-                      onClick={loadDemoEncounter}
-                      className="bg-[#0f0f12] hover:bg-[#16161a] text-amber-550 border border-zinc-700 text-xs px-4 py-2.5 rounded-xl transition-all cursor-pointer font-semibold"
-                    >
-                      Injetar Combatentes Exemplo
-                    </button>
+                  <div className="flex gap-2.5 justify-center">
                     <button
                       onClick={() => setActiveTab('char-library')}
-                      className="bg-amber-600 hover:bg-amber-500 text-black font-semibold text-xs px-4 py-2.5 rounded-xl shadow-md transition-all cursor-pointer"
+                      className="bg-amber-600 hover:bg-amber-500 text-black font-semibold text-xs px-5 py-3 rounded-xl shadow-md transition-all cursor-pointer flex items-center gap-1.5"
                     >
                       Ver Catálogo de Personagens
                     </button>
@@ -1365,7 +1603,8 @@ export default function App() {
                                 onClick={() => {
                                   handleModifyHp(c.id, hpInputValues[c.id] || "1", 'damage');
                                 }}
-                                className="px-2.5 py-1.5 bg-rose-950/30 hover:bg-rose-900 border-r border-[#2d2d35] text-rose-400 hover:text-white transition-all text-xs font-semibold cursor-pointer"
+                                className="px-2.5 py-1.5 bg-rose-950/30 hover:bg-rose-900 border-r border-[#2d2d35] text-rose-455 hover:text-white transition-all text-xs font-semibold cursor-pointer"
+                                title="Aplicar dano (ou aperte Enter no campo de texto)"
                               >
                                 Dano
                               </button>
@@ -1378,8 +1617,14 @@ export default function App() {
                                   const val = e.target.value;
                                   setHpInputValues(prev => ({ ...prev, [c.id]: val }));
                                 }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    handleModifyHp(c.id, hpInputValues[c.id] || "1", 'damage');
+                                  }
+                                }}
                                 className="w-10 bg-transparent text-center text-zinc-200 outline-none text-xs font-bold font-mono py-1 placeholder-zinc-700"
                                 id={`input-hp-adjust-${c.id}`}
+                                title="Digite o valor e pressione 'Dano', 'Cura' ou tecle 'Enter' para dano rápido"
                               />
 
                               <button
@@ -1387,43 +1632,76 @@ export default function App() {
                                   handleModifyHp(c.id, hpInputValues[c.id] || "1", 'heal');
                                 }}
                                 className="px-2.5 py-1.5 bg-emerald-950/30 hover:bg-emerald-900 text-emerald-400 hover:text-white transition-all text-xs font-semibold cursor-pointer"
+                                title="Aplicar cura"
                               >
                                 Cura
                               </button>
                             </div>
 
-                            {c.type === 'enemy' && (
+                            {/* HP Adjuster Instant Modifier Pills */}
+                            <div className="flex items-center gap-1.5 bg-[#09090c]/50 p-1 border border-[#2d2d35]/30 rounded-lg shrink-0">
                               <button
-                                onClick={() => {
-                                  if (attackConfigureId === c.id) {
-                                    setAttackConfigureId(null);
-                                  } else {
-                                    setAttackConfigureId(c.id);
-                                    const firstActivePlayer = combatants.find(x => x.type === 'player' && !x.isDefeated);
-                                    if (firstActivePlayer) {
-                                      setSelectedTargetId(firstActivePlayer.id);
-                                      setCustomTargetAc(firstActivePlayer.ac.toString());
-                                    } else {
-                                      setSelectedTargetId('manual');
-                                      setCustomTargetAc('10');
-                                    }
-                                    setAttackerCountInput(aliveCount > 0 ? aliveCount : 1);
-                                  }
-                                }}
-                                disabled={isDead}
-                                className={`p-1.5 rounded-lg border flex items-center gap-1.5 text-xs font-medium cursor-pointer transition-all ${
-                                  isDead
-                                    ? 'bg-[#0a0a0c] text-zinc-700 border-zinc-900 cursor-not-allowed'
-                                    : attackConfigureId === c.id
-                                      ? 'bg-amber-500 text-black border-amber-400'
-                                      : 'bg-[#ffc83b]/10 border-[#ffc83b]/30 text-[#ffc83b] hover:bg-[#ffc83b]/20 shadow-sm'
-                                }`}
-                                id={`btn-attack-roll-${c.id}`}
+                                onClick={() => handleModifyHp(c.id, "1", 'damage')}
+                                className="w-8 h-8 md:w-6 md:h-6 rounded bg-[#111115] hover:bg-rose-950/40 text-[11px] md:text-[10px] text-zinc-400 hover:text-rose-400 border border-[#2d2d35] flex items-center justify-center transition-all cursor-pointer font-bold"
+                                title="Dano rápido: -1 PV"
                               >
-                                <Swords className="w-3.5 h-3.5 shrink-0" />
-                                Atacar
+                                -1
                               </button>
-                            )}
+                              <button
+                                onClick={() => handleModifyHp(c.id, "5", 'damage')}
+                                className="w-8 h-8 md:w-6 md:h-6 rounded bg-[#111115] hover:bg-rose-950/40 text-[11px] md:text-[10px] text-zinc-400 hover:text-rose-400 border border-[#2d2d35] flex items-center justify-center transition-all cursor-pointer font-bold"
+                                title="Dano rápido: -5 PV"
+                              >
+                                -5
+                              </button>
+                              <button
+                                onClick={() => handleModifyHp(c.id, "10", 'damage')}
+                                className="w-9 h-8 md:w-7 md:h-6 rounded bg-[#111115] hover:bg-rose-950/40 text-[11px] md:text-[10px] text-zinc-400 hover:text-rose-400 border border-[#2d2d35] flex items-center justify-center transition-all cursor-pointer font-bold"
+                                title="Dano rápido: -10 PV"
+                              >
+                                -10
+                              </button>
+                              <button
+                                onClick={() => handleModifyHp(c.id, "5", 'heal')}
+                                className="w-8 h-8 md:w-6 md:h-6 rounded bg-[#111115] hover:bg-emerald-950/40 text-[11px] md:text-[10px] text-zinc-400 hover:text-emerald-400 border border-[#2d2d35] flex items-center justify-center transition-all cursor-pointer font-bold"
+                                title="Cura rápida: +5 PV"
+                              >
+                                +5
+                              </button>
+                            </div>
+
+                            <button
+                              onClick={() => {
+                                if (attackConfigureId === c.id) {
+                                  setAttackConfigureId(null);
+                                } else {
+                                  setAttackConfigureId(c.id);
+                                  const opposingType = c.type === 'enemy' ? 'player' : 'enemy';
+                                  const firstActiveTarget = combatants.find(x => x.type === opposingType && !x.isDefeated);
+                                  if (firstActiveTarget) {
+                                    setSelectedTargetId(firstActiveTarget.id);
+                                    setCustomTargetAc(firstActiveTarget.ac.toString());
+                                  } else {
+                                    setSelectedTargetId('manual');
+                                    setCustomTargetAc('10');
+                                  }
+                                  setAttackerCountInput(aliveCount > 0 ? aliveCount : 1);
+                                }
+                              }}
+                              disabled={isDead}
+                              className={`p-1.5 rounded-lg border flex items-center gap-1.5 text-xs font-medium cursor-pointer transition-all ${
+                                isDead
+                                  ? 'bg-[#0a0a0c] text-zinc-700 border-zinc-900 cursor-not-allowed'
+                                  : attackConfigureId === c.id
+                                    ? 'bg-amber-500 text-black border-amber-400'
+                                    : 'bg-[#ffc83b]/10 border-[#ffc83b]/30 text-[#ffc83b] hover:bg-[#ffc83b]/20 shadow-sm'
+                              }`}
+                              id={`btn-attack-roll-${c.id}`}
+                              title={c.type === 'enemy' ? "Simular ataque de monstros" : "Simular ataque de jogador"}
+                            >
+                              <Swords className="w-3.5 h-3.5 shrink-0" />
+                              Atacar
+                            </button>
 
                             <button
                               onClick={() => handleRemoveCombatant(c.id, c.name)}
@@ -1438,53 +1716,121 @@ export default function App() {
 
                       {/* Expandable configured attack simulation panel */}
                       {attackConfigureId === c.id && (
-                        <div className="border-t border-[#2d2d35]/65 bg-[#0c0c0e] p-4 space-y-3">
-                          <span className="text-[10px] font-bold text-amber-500 uppercase tracking-widest flex items-center gap-1.5">
+                        <div className="border-t border-[#2d2d35]/65 bg-[#0c0c0e] p-4 space-y-4">
+                          <span className="text-[10px] font-bold text-amber-500 uppercase tracking-widest flex items-center gap-1.5 border-b border-[#2d2d35]/50 pb-2">
                             <Swords className="w-3.5 h-3.5" />
-                            Definir Alvo e Quantidade de Atacantes
+                            Definir Configurações do Grupo de Ataque 
                           </span>
 
-                          <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
-                            <div className="md:col-span-4 flex flex-col space-y-1">
-                              <span className="text-[10px] font-bold text-zinc-550 uppercase font-sans">Alvo do Ataque:</span>
-                              <select
-                                value={selectedTargetId}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  setSelectedTargetId(val);
-                                  if (val !== 'manual') {
-                                    const t = combatants.find(x => x.id === val);
-                                    if (t) setCustomTargetAc(t.ac.toString());
-                                  }
-                                }}
-                                className="w-full bg-[#111115] border border-[#2d2d35] rounded-lg py-1.5 px-2 text-xs text-zinc-200 outline-none focus:border-amber-500"
-                              >
-                                {combatants.filter(tc => tc.type === 'player' && !tc.isDefeated).map(tc => (
-                                  <option key={tc.id} value={tc.id}>
-                                    {tc.name} (CA: {tc.ac})
-                                  </option>
-                                ))}
-                                <option value="manual">Manual (Definir CA...)</option>
-                              </select>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {/* Line 1 Left: Target selecting & CA */}
+                            <div className="space-y-3 bg-[#0f0f12] p-3 rounded-lg border border-[#2d2d35]/50">
+                              <span className="block text-[10px] font-black text-zinc-450 uppercase tracking-wider">
+                                🎯 Selecione o Alvo
+                              </span>
+
+                              <div className="space-y-2">
+                                <div>
+                                  <span className="text-[9px] text-zinc-500 block uppercase mb-1">Alvo Principal:</span>
+                                  <select
+                                    value={selectedTargetId}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setSelectedTargetId(val);
+                                      if (val !== 'manual') {
+                                        const t = combatants.find(x => x.id === val);
+                                        if (t) setCustomTargetAc(t.ac.toString());
+                                      }
+                                    }}
+                                    className="w-full bg-[#111115] border border-[#2d2d35] rounded-lg py-1.5 px-2 text-xs text-zinc-200 outline-none focus:border-amber-500"
+                                  >
+                                    {combatants.filter(tc => tc.type !== c.type && !tc.isDefeated).map(tc => (
+                                      <option key={tc.id} value={tc.id}>
+                                        [{tc.type === 'enemy' ? 'Monstro/Inimigo' : 'Jogador'}] {tc.name} (CA: {tc.ac})
+                                      </option>
+                                    ))}
+                                    <option value="manual">Manual (Definir CA...)</option>
+                                  </select>
+                                </div>
+
+                                {selectedTargetId === 'manual' && (
+                                  <div>
+                                    <span className="text-[9px] text-zinc-500 block uppercase mb-1">Classe de Armadura do Alvo (CA):</span>
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      max="35"
+                                      value={customTargetAc}
+                                      onChange={(e) => setCustomTargetAc(e.target.value)}
+                                      className="w-full bg-[#111115] border border-[#2d2d35] text-zinc-250 rounded-lg py-1 px-2 text-center text-xs font-mono"
+                                    />
+                                  </div>
+                                )}
+                              </div>
                             </div>
 
-                            {selectedTargetId === 'manual' && (
-                              <div className="md:col-span-2 flex flex-col space-y-1">
-                                <span className="text-[10px] font-bold text-zinc-550 uppercase font-sans">CA do Alvo:</span>
-                                <input
-                                  type="number"
-                                  min="1"
-                                  max="35"
-                                  value={customTargetAc}
-                                  onChange={(e) => setCustomTargetAc(e.target.value)}
-                                  className="w-full bg-[#111115] border border-[#2d2d35] text-zinc-250 rounded-lg py-1.5 px-2 text-center text-xs font-mono"
-                                />
-                              </div>
-                            )}
+                            {/* Line 1 Right: Select Attack Profile & Roll Mode (Advantage/Disadvantage) */}
+                            <div className="space-y-3 bg-[#0f0f12] p-3 rounded-lg border border-[#2d2d35]/50">
+                              <span className="block text-[10px] font-black text-zinc-450 uppercase tracking-wider">
+                                ⚡ Tipo de Acerto & Perfil
+                              </span>
 
-                            <div className={`${selectedTargetId === 'manual' ? 'md:col-span-3' : 'md:col-span-5'} flex flex-col space-y-1`}>
+                              <div className="space-y-2">
+                                <div>
+                                  <span className="text-[9px] text-zinc-500 block uppercase mb-1">Escolher Ataque:</span>
+                                  <select
+                                    value={selectedAttackIndex}
+                                    onChange={(e) => setSelectedAttackIndex(parseInt(e.target.value, 10) || 0)}
+                                    className="w-full bg-[#111115] border border-[#2d2d35] rounded-lg py-1.5 px-2 text-xs text-zinc-255 font-mono outline-none focus:border-amber-500"
+                                  >
+                                    {c.attacksList && c.attacksList.length > 0 ? (
+                                      c.attacksList.map((at, idx) => (
+                                        <option key={idx} value={idx}>
+                                          {at.name} (Acerto: +{at.attackMod} | Dano: {at.damageDice} +{at.damageMod})
+                                        </option>
+                                      ))
+                                    ) : (
+                                      <option value={0}>Ataque Padrão (Acerto: +{c.attackMod})</option>
+                                    )}
+                                  </select>
+                                </div>
+
+                                <div>
+                                  <span className="text-[9px] text-zinc-500 block uppercase mb-1">Modo de Rolar Acerto:</span>
+                                  <div className="grid grid-cols-3 gap-1">
+                                    {(['normal', 'advantage', 'disadvantage'] as const).map((mode) => {
+                                      const label = mode === 'normal' ? 'Normal' : mode === 'advantage' ? 'Vantagem' : 'Desvant';
+                                      const active = selectedAttackRollMode === mode;
+                                      return (
+                                        <button
+                                          key={mode}
+                                          type="button"
+                                          onClick={() => setSelectedAttackRollMode(mode)}
+                                          className={`py-1 px-1 rounded text-[9px] uppercase tracking-wider font-extrabold border transition-all cursor-pointer ${
+                                            active
+                                              ? mode === 'advantage'
+                                                ? 'bg-emerald-950/20 border-emerald-500 text-emerald-400'
+                                                : mode === 'disadvantage'
+                                                  ? 'bg-rose-950/20 border-rose-800 text-rose-450'
+                                                  : 'bg-amber-500/10 border-amber-500/60 text-amber-500'
+                                              : 'bg-[#111115] border-[#2d2d35]/60 text-zinc-500 hover:text-zinc-300'
+                                          }`}
+                                        >
+                                          {label}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Line 2: Attacking Units & Execute Submit button */}
+                          <div className="bg-[#0f0f12] p-3 rounded-lg border border-[#2d2d35]/50 flex flex-col md:flex-row items-center justify-between gap-4">
+                            <div className="flex flex-col space-y-1 w-full md:w-auto">
                               <span className="text-[10px] font-bold text-zinc-550 uppercase font-sans">Qtd de Criaturas Atacando:</span>
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2.5">
                                 <input
                                   type="number"
                                   min="1"
@@ -1493,17 +1839,29 @@ export default function App() {
                                   onChange={(e) => setAttackerCountInput(Math.min(aliveCount, Math.max(1, parseInt(e.target.value, 10) || 1)))}
                                   className="w-16 bg-[#111115] border border-[#2d2d35] text-zinc-200 rounded-lg py-1.5 px-2 text-center text-xs font-bold outline-none font-mono"
                                 />
-                                <span className="text-[10px] text-zinc-500 font-mono">/ {aliveCount} vivas</span>
+                                <span className="text-[10px] text-zinc-500 font-mono">/ {aliveCount} vivas no grupo</span>
                               </div>
                             </div>
 
-                            <div className="md:col-span-3">
+                            <div className="flex flex-col sm:flex-row items-center gap-2 w-full md:w-auto shrink-0">
                               <button
                                 type="button"
                                 onClick={() => handleGroupAttackRollConfigured(c, selectedTargetId, parseInt(customTargetAc, 10), attackerCountInput)}
-                                className="w-full bg-amber-600 hover:bg-amber-500 text-black font-extrabold py-2 px-3 rounded-lg text-xs uppercase transition-all flex items-center justify-center gap-1 shadow"
+                                className="w-full sm:w-auto bg-amber-600 hover:bg-amber-500 text-black font-extrabold py-2 px-4 rounded-lg text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 shadow cursor-pointer"
+                                title="Rolar acerto contra classe de armadura (CA) e calcular dano total automático se acertar"
                               >
-                                Atacar Alvo
+                                <Swords className="w-3.5 h-3.5" />
+                                Rolar Ataque
+                              </button>
+                              
+                              <button
+                                type="button"
+                                onClick={() => handleGroupDamageRollConfigured(c, attackerCountInput)}
+                                className="w-full sm:w-auto bg-[#1a1315] hover:bg-[#281c1c] text-rose-400 hover:text-rose-300 border border-rose-900/40 hover:border-rose-700/50 font-extrabold py-2 px-4 rounded-lg text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 shadow cursor-pointer"
+                                title="Rolar apenas o dado de dano deste perfil de ataque diretamente (sem rolar AC contra CA)"
+                              >
+                                <Dice5 className="w-3.5 h-3.5 text-rose-500 animate-pulse" />
+                                Rolar Só Dano
                               </button>
                             </div>
                           </div>
@@ -1519,7 +1877,7 @@ export default function App() {
         </div>
 
         {/* RIGHT COLUMN: CONTROLS, CREATURE BUILDERS, & LIVE CHANNELS (SPAN 4) */}
-        <div className="lg:col-span-4 flex flex-col space-y-4">
+        <div className={`lg:col-span-4 flex flex-col space-y-4 ${mobileActiveView === 'deck' ? 'flex' : 'hidden lg:flex'}`}>
           
           {/* Roll simulation outcome floating panel */}
           <AnimatePresence>
@@ -1566,6 +1924,110 @@ export default function App() {
             </div>
           ) : (
             <div className="space-y-4">
+              {/* Quick Dice Roller Tray / Painel de Dados */}
+              <div className="bg-[#111115] border border-[#2d2d35]/90 rounded-xl p-3.5 shadow-md space-y-3">
+                <div className="flex items-center justify-between border-b border-[#2d2d35]/65 pb-2">
+                  <div className="flex items-center gap-2">
+                    <Dice5 className="w-4 h-4 text-amber-500" />
+                    <span className="text-[11px] font-black tracking-wider uppercase text-zinc-300 font-display">
+                      Dados livres / Rolar Dano 🎲
+                    </span>
+                  </div>
+                  {quickRollVal && (
+                    <button
+                      onClick={() => setQuickRollVal(null)}
+                      className="text-[9px] font-semibold text-zinc-500 hover:text-amber-500 transition-colors uppercase cursor-pointer"
+                    >
+                      Limpar
+                    </button>
+                  )}
+                </div>
+
+                {/* Dice collection strip */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {([4, 6, 8, 10, 12, 20, 100] as const).map((sides) => (
+                    <button
+                      key={sides}
+                      onClick={() => handleQuickDieRoll(sides)}
+                      className="flex-1 min-w-[40px] h-9 rounded-lg bg-[#16161c] hover:bg-amber-600 border border-[#2d2d35] hover:border-amber-500 text-zinc-300 hover:text-black font-extrabold text-xs transition-all flex flex-col items-center justify-center cursor-pointer shadow-sm group"
+                      title={`Rolar d${sides}`}
+                    >
+                      <span className="text-[10px] text-zinc-500 group-hover:text-amber-950 font-normal">d</span>
+                      <span className="-mt-1 font-mono font-bold">{sides}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Modifier input and Custom Dice string field */}
+                <div className="grid grid-cols-12 gap-2">
+                  {/* Modifier input box */}
+                  <div className="col-span-4 flex flex-col space-y-1 bg-[#09090c]/40 p-1 rounded-lg border border-[#2d2d35]/30">
+                    <span className="text-[9px] text-zinc-500 font-bold uppercase text-center">Mods (+/-)</span>
+                    <input
+                      type="number"
+                      value={quickMod === 0 ? '' : quickMod}
+                      placeholder="0"
+                      onChange={(e) => setQuickMod(parseInt(e.target.value, 10) || 0)}
+                      className="w-full bg-transparent text-center font-bold font-mono text-xs text-amber-500 outline-none placeholder-zinc-700"
+                    />
+                  </div>
+
+                  {/* Formula formula string roll box */}
+                  <div className="col-span-8 flex items-center bg-[#09090c]/40 p-1 rounded-lg border border-[#2d2d35]/30 gap-1.5">
+                    <div className="flex-1 flex flex-col space-y-0.5">
+                      <span className="text-[9px] text-zinc-500 font-bold uppercase pl-1">Fórmula Livre</span>
+                      <input
+                        type="text"
+                        placeholder="Ex: 2d6+4"
+                        value={customDiceFormula}
+                        onChange={(e) => setCustomDiceFormula(e.target.value)}
+                        className="w-full bg-transparent text-[11px] font-bold font-mono text-zinc-200 outline-none pl-1 placeholder-zinc-600"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && customDiceFormula) {
+                            handleCustomFormulaRoll(customDiceFormula);
+                          }
+                        }}
+                      />
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (customDiceFormula) handleCustomFormulaRoll(customDiceFormula);
+                      }}
+                      className="h-7 px-2.5 rounded bg-amber-600 hover:bg-amber-500 text-black text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer select-none"
+                    >
+                      Rolar
+                    </button>
+                  </div>
+                </div>
+
+                {/* Display Area for latest Quick Roll with animations */}
+                <AnimatePresence mode="wait">
+                  {quickRollVal && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 4, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -4, scale: 0.98 }}
+                      className="bg-[#09090c] border border-amber-500/25 p-2 rounded-lg flex items-center justify-between font-mono text-xs shadow-inner"
+                    >
+                      <div className="flex flex-col space-y-0.5">
+                        <span className="text-[9px] uppercase tracking-wider text-amber-500 font-bold font-sans">
+                          Último Resultado ({quickRollVal.die})
+                        </span>
+                        <span className="text-[10px] text-zinc-500">
+                          {quickRollVal.rollText}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-zinc-550 font-sans font-light text-xs">=</span>
+                        <span className="text-lg font-black text-amber-500 filter drop-shadow-[0_0_8px_rgba(245,158,11,0.2)]">
+                          {quickRollVal.total}
+                        </span>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
               {/* Premium Tab Selector for DM controls */}
               <div className="flex bg-[#0c0c0e] p-1 rounded-xl border border-[#2d2d35]/60 text-xs shadow-inner">
                 <button

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Combatant } from '../types';
-import { Plus, Sparkles, Swords, UserPlus, Shield, Heart, Dices, Info, History, Trash2, Search } from 'lucide-react';
+import { Plus, Minus, Zap, Sparkles, Swords, UserPlus, Shield, Heart, Dices, Info, History, Trash2, Search } from 'lucide-react';
 import { collection, query, where, onSnapshot, deleteDoc, doc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 
@@ -15,20 +15,54 @@ export default function CombatantForm({ userId, onAddCombatant, onLog }: Combata
   const [recentCreatures, setRecentCreatures] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   
-  // Visual fields
+// Visual fields
   const [name, setName] = useState('');
   const [type, setType] = useState<'player' | 'enemy'>('enemy');
   const [initiative, setInitiative] = useState<string>('');
+  
+  // Initiative settings
+  const [initiativeMod, setInitiativeMod] = useState<number>(0);
+  const [initiativeRollMode, setInitiativeRollMode] = useState<'normal' | 'advantage' | 'disadvantage'>('normal');
+
   const [ac, setAc] = useState<number>(10);
   const [individualHp, setIndividualHp] = useState<number>(10);
   const [groupSize, setGroupSize] = useState<number>(1);
-  const [attackMod, setAttackMod] = useState<number>(0);
+  const [attackMod, setAttackMod] = useState<number>(4);
   const [attacksPerCreature, setAttacksPerCreature] = useState<number>(1);
+
+  // Multiple attack configurations state
+  const [attacksList, setAttacksList] = useState<any[]>([
+    { name: 'Ataque Padrão', attackMod: 4, damageDice: '1d6', damageMod: 2 }
+  ]);
   
   // Text Parser field
   const [rawText, setRawText] = useState('');
   const [textError, setTextError] = useState('');
   const [parsedPreview, setParsedPreview] = useState<any>(null);
+  
+  // Mapeamento de quantidades para itens de histórico
+  const [qtyMap, setQtyMap] = useState<Record<string, number>>({});
+
+  const handleAddAttackRow = () => {
+    setAttacksList(prev => [
+      ...prev,
+      { name: `Ataque ${prev.length + 1}`, attackMod: 4, damageDice: '1d6', damageMod: 2 }
+    ]);
+  };
+
+  const handleRemoveAttackRow = (index: number) => {
+    if (attacksList.length <= 1) return;
+    setAttacksList(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleUpdateAttackRow = (index: number, field: string, value: any) => {
+    setAttacksList(prev => prev.map((item, i) => {
+      if (i === index) {
+        return { ...item, [field]: value };
+      }
+      return item;
+    }));
+  };
 
   // Load and subscribe to recent creatures (history)
   useEffect(() => {
@@ -74,16 +108,92 @@ export default function CombatantForm({ userId, onAddCombatant, onLog }: Combata
     }
   }, [userId]);
 
+  const getItemQty = (item: any) => qtyMap[item.name] || 1;
+
+  const handleUpdateQtyMap = (itemName: string, increment: number) => {
+    setQtyMap(prev => {
+      const curr = prev[itemName] || 1;
+      const next = Math.max(1, curr + increment);
+      return { ...prev, [itemName]: next };
+    });
+  };
+
   const handleSelectRecent = (item: any) => {
-    setName(item.name);
-    setType(item.type || 'enemy');
-    setAc(item.ac || 10);
-    setIndividualHp(item.individualHp || 10);
-    setGroupSize(item.groupSize || 1);
-    setAttackMod(item.attackMod || 0);
-    setAttacksPerCreature(item.attacksPerCreature || 1);
+    const qty = getItemQty(item);
+    if (name.trim() && name.toLowerCase() === item.name.toLowerCase()) {
+      setGroupSize(prev => prev + qty);
+      onLog(`Incrementado tamanho do grupo de "${item.name}" para ${groupSize + qty}.`, 'info');
+    } else {
+      setName(item.name);
+      setType(item.type || 'enemy');
+      setAc(item.ac || 10);
+      setIndividualHp(item.individualHp || 10);
+      setGroupSize(qty);
+      setAttackMod(item.attackMod || 4);
+      setAttacksPerCreature(item.attacksPerCreature || 1);
+      setInitiativeMod(item.initiativeMod || 0);
+      setInitiativeRollMode(item.initiativeRollMode || 'normal');
+      
+      if (item.attacksList && item.attacksList.length > 0) {
+        setAttacksList(item.attacksList);
+      } else {
+        setAttacksList([
+          { name: 'Ataque Padrão', attackMod: item.attackMod || 4, damageDice: '1d6', damageMod: 2 }
+        ]);
+      }
+      onLog(`Carregado do histórico: "${item.name}" pronto para o combate com ${qty} unidade(s).`, 'info');
+    }
+  };
+
+  const handleQuickAddDirect = (item: any) => {
+    const qty = getItemQty(item);
     
-    onLog(`Carregado do histórico: "${item.name}" pronto para o combate.`, 'info');
+    // Rolar iniciativa com base no tom (vantagem/desvantagem) e mod
+    const rollMode = item.initiativeRollMode || 'normal';
+    const roll1 = Math.floor(Math.random() * 20) + 1;
+    let finalRoll = roll1;
+    let breakdown = `d20 [${roll1}]`;
+
+    if (rollMode === 'advantage') {
+      const roll2 = Math.floor(Math.random() * 20) + 1;
+      finalRoll = Math.max(roll1, roll2);
+      breakdown = `Vantagem d20 [${roll1}, ${roll2}] (maior: ${finalRoll})`;
+    } else if (rollMode === 'disadvantage') {
+      const roll2 = Math.floor(Math.random() * 20) + 1;
+      finalRoll = Math.min(roll1, roll2);
+      breakdown = `Desvantagem d20 [${roll1}, ${roll2}] (menor: ${finalRoll})`;
+    }
+
+    const initMod = item.initiativeMod || 0;
+    const initVal = finalRoll + initMod;
+    const rollDetailsText = `(Iniciativa auto-rolada: ${finalRoll} + Mod ${initMod >= 0 ? '+' : ''}${initMod} = ${initVal} | ${breakdown})`;
+
+    const calculatedMaxHp = (item.individualHp || 10) * qty;
+    const finalAttacksList = item.attacksList && item.attacksList.length > 0 
+      ? item.attacksList 
+      : [{ name: 'Ataque Padrão', attackMod: item.attackMod || 4, damageDice: '1d6', damageMod: 2 }];
+
+    onAddCombatant({
+      name: item.type === 'enemy' && qty > 1 ? `${item.name} x${qty}` : item.name,
+      type: item.type || 'enemy',
+      ac: item.ac || 10,
+      initiative: isNaN(initVal) ? 10 : initVal,
+      initiativeMod: initMod,
+      initiativeRollMode: rollMode,
+      currentHp: calculatedMaxHp,
+      maxHp: calculatedMaxHp,
+      individualHp: item.individualHp || 10,
+      groupSize: qty,
+      attackMod: finalAttacksList[0]?.attackMod ?? (item.attackMod || 4),
+      attacksPerCreature: item.attacksPerCreature || 1,
+      attacksList: finalAttacksList
+    });
+
+    const entityDesc = item.type === 'enemy' 
+      ? `Grupo de ${qty}x ${item.name} (${calculatedMaxHp} HP Total, CA ${item.ac})` 
+      : `${item.name} (Jogador, CA ${item.ac})`;
+
+    onLog(`Adicionado direto: ${entityDesc} ${rollDetailsText}`, 'setup');
   };
 
   const handleDeleteRecent = async (e: React.MouseEvent, item: any) => {
@@ -121,36 +231,69 @@ export default function CombatantForm({ userId, onAddCombatant, onLog }: Combata
     setAc(10);
     setIndividualHp(10);
     setGroupSize(1);
-    setAttackMod(0);
+    setAttackMod(4);
     setAttacksPerCreature(1);
+    setInitiativeMod(0);
+    setInitiativeRollMode('normal');
+    setAttacksList([
+      { name: 'Ataque Padrão', attackMod: 4, damageDice: '1d6', damageMod: 2 }
+    ]);
   };
 
   const handleVisualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
 
-    const initVal = initiative === '' ? Math.floor(Math.random() * 20) + 1 : parseInt(initiative, 10);
+    let initVal = 10;
+    let rollDetailsText = '';
+
+    if (initiative !== '') {
+      initVal = parseInt(initiative, 10);
+      rollDetailsText = `(Iniciativa definida manual: ${initVal})`;
+    } else {
+      // Roll based on selection
+      const roll1 = Math.floor(Math.random() * 20) + 1;
+      let finalRoll = roll1;
+      let breakdown = `d20 [${roll1}]`;
+
+      if (initiativeRollMode === 'advantage') {
+        const roll2 = Math.floor(Math.random() * 20) + 1;
+        finalRoll = Math.max(roll1, roll2);
+        breakdown = `Vantagem d20 [${roll1}, ${roll2}] (maior: ${finalRoll})`;
+      } else if (initiativeRollMode === 'disadvantage') {
+        const roll2 = Math.floor(Math.random() * 20) + 1;
+        finalRoll = Math.min(roll1, roll2);
+        breakdown = `Desvantagem d20 [${roll1}, ${roll2}] (menor: ${finalRoll})`;
+      }
+
+      initVal = finalRoll + initiativeMod;
+      rollDetailsText = `(Iniciativa auto-rolada: ${finalRoll} + Mod ${initiativeMod >= 0 ? '+' : ''}${initiativeMod} = ${initVal} | ${breakdown})`;
+    }
+
     const calculatedMaxHp = individualHp * groupSize;
+    const finalAttacksList = attacksList.length > 0 ? attacksList : [{ name: 'Ataque Padrão', attackMod, damageDice: '1d6', damageMod: 2 }];
 
     onAddCombatant({
       name: type === 'enemy' && groupSize > 1 ? `${name} x${groupSize}` : name,
       type,
       initiative: isNaN(initVal) ? 10 : initVal,
+      initiativeMod,
+      initiativeRollMode,
       currentHp: calculatedMaxHp,
       maxHp: calculatedMaxHp,
       individualHp,
       groupSize,
       ac,
-      attackMod,
+      attackMod: finalAttacksList[0]?.attackMod ?? attackMod,
       attacksPerCreature,
+      attacksList: finalAttacksList
     });
 
-    const initRollText = initiative === '' ? `(Iniciativa auto-rolada: ${initVal})` : `(Iniciativa: ${initVal})`;
     const entityDesc = type === 'enemy' 
       ? `Grupo de ${groupSize}x ${name} (${calculatedMaxHp} HP Total, CA ${ac})` 
       : `${name} (Jogador, CA ${ac})`;
     
-    onLog(`Adicionado: ${entityDesc} ${initRollText}`, 'setup');
+    onLog(`Adicionado: ${entityDesc} ${rollDetailsText}`, 'setup');
     resetForm();
   };
 
@@ -424,7 +567,7 @@ export default function CombatantForm({ userId, onAddCombatant, onLog }: Combata
               )}
 
               <div>
-                <label className="block text-[11px] font-semibold text-zinc-450 tracking-wider uppercase mb-1">Iniciativa</label>
+                <label className="block text-[11px] font-semibold text-zinc-450 tracking-wider uppercase mb-1">Iniciativa Base</label>
                 <div className="flex gap-1.5">
                   <input
                     type="number"
@@ -437,7 +580,7 @@ export default function CombatantForm({ userId, onAddCombatant, onLog }: Combata
                   <button
                     type="button"
                     onClick={handleRollInitiative}
-                    title="Rolar Iniciativa"
+                    title="Definir rolagem rápida"
                     className="bg-[#1c1c24] hover:bg-[#282830] text-amber-500 border border-[#2d2d35] rounded-lg px-2.5 flex items-center justify-center transition-all cursor-pointer"
                   >
                     <Dices className="w-4 h-4" />
@@ -446,39 +589,140 @@ export default function CombatantForm({ userId, onAddCombatant, onLog }: Combata
               </div>
             </div>
 
-            {/* Combat attack settings (only for enemies) */}
-            {type === 'enemy' && (
-              <div className="grid grid-cols-2 gap-3 border-t border-[#2d2d35]/50 pt-3">
-                <div>
-                  <label className="block text-[11px] font-semibold text-zinc-455 tracking-wider uppercase mb-1">Bônus de Ataque</label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-2 text-zinc-500 text-sm font-semibold">{attackMod >= 0 ? '+' : ''}</span>
-                    <input
-                      type="number"
-                      value={attackMod}
-                      onChange={(e) => setAttackMod(parseInt(e.target.value, 10) || 0)}
-                      className="w-full bg-[#0c0c0e] border border-[#2d2d35] focus:border-amber-500 rounded-lg py-2 pl-7 pr-3 text-sm text-zinc-200 outline-none transition-all font-mono"
-                      id="input-attack-mod"
-                    />
-                  </div>
-                </div>
+            {/* Initiative mod & Roll Mode (Advantage/Disadvantage) */}
+            <div className="grid grid-cols-2 gap-3 border-t border-[#2d2d35]/30 pt-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-zinc-450 tracking-wider uppercase mb-1">
+                  Mod. Iniciativa
+                </label>
+                <input
+                  type="number"
+                  placeholder="+0"
+                  value={initiativeMod || ''}
+                  onChange={(e) => setInitiativeMod(parseInt(e.target.value, 10) || 0)}
+                  className="w-full bg-[#0c0c0e] border border-[#2d2d35] focus:border-amber-500 rounded-lg py-2 px-3 text-sm text-zinc-200 outline-none transition-all font-mono"
+                />
+              </div>
 
-                <div>
-                  <label className="block text-[11px] font-semibold text-zinc-455 tracking-wider uppercase mb-1">Multiataque</label>
+              <div>
+                <label className="block text-[11px] font-semibold text-zinc-450 tracking-wider uppercase mb-1">
+                  Tom da Rolagem
+                </label>
+                <select
+                  value={initiativeRollMode}
+                  onChange={(e) => setInitiativeRollMode(e.target.value as any)}
+                  className="w-full bg-[#0c0c0e] border border-[#2d2d35] focus:border-amber-500 rounded-lg py-2 px-3 text-sm text-zinc-200 outline-none transition-all font-mono"
+                >
+                  <option value="normal">Normal (1d20)</option>
+                  <option value="advantage">Vantagem (2d20)</option>
+                  <option value="disadvantage">Desvantagem (2d20)</option>
+                </select>
+              </div>
+            </div>
+
+            {/* MULTIPLE ATTACKS CONFIGURATION */}
+            <div className="space-y-3.5 border-t border-[#2d2d35]/50 pt-3.5">
+              <div className="flex items-center justify-between">
+                <label className="block text-[11px] font-black text-amber-500/90 tracking-widest uppercase font-display select-none">
+                  ⚔️ Perfis de Ataque ({attacksList.length})
+                </label>
+                <button
+                  type="button"
+                  onClick={handleAddAttackRow}
+                  className="text-[10px] font-bold text-amber-500 hover:text-amber-400 bg-[#1c1c24] hover:bg-[#282832] border border-[#2d2d35]/80 hover:border-amber-500/30 px-2 py-1 rounded flex items-center gap-1 transition-all pointer-events-auto cursor-pointer"
+                >
+                  <Plus className="w-3 h-3" />
+                  + Novo Ataque
+                </button>
+              </div>
+
+              <div className="space-y-2.5 max-h-56 overflow-y-auto pr-1">
+                {attacksList.map((attack, index) => (
+                  <div key={index} className="bg-[#0c0c0e]/30 border border-[#2d2d35]/50 hover:border-[#2d2d35] rounded-lg p-3 space-y-2.5 transition-all">
+                    <div className="flex items-center justify-between gap-2 border-b border-[#2d2d35]/30 pb-1.5">
+                      <input
+                        type="text"
+                        required
+                        value={attack.name}
+                        onChange={(e) => handleUpdateAttackRow(index, 'name', e.target.value)}
+                        placeholder="Nome do ataque (ex: Mordida)"
+                        className="bg-transparent text-xs font-bold text-zinc-250 outline-none focus:border-b border-amber-500/50 py-0.5 w-full placeholder:text-zinc-700"
+                      />
+                      {attacksList.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveAttackRow(index)}
+                          className="opacity-60 hover:opacity-100 hover:text-rose-400 p-1 transition-all shrink-0 cursor-pointer"
+                          title="Remover este ataque"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <span className="block text-[8px] font-bold text-zinc-500 uppercase mb-1 tracking-wider">Bônus Acerto</span>
+                        <div className="relative">
+                          <span className="absolute left-2.5 top-1.5 text-xs text-zinc-500 font-mono font-medium">
+                            {attack.attackMod >= 0 ? '+' : ''}
+                          </span>
+                          <input
+                            type="number"
+                            value={attack.attackMod}
+                            onChange={(e) => handleUpdateAttackRow(index, 'attackMod', parseInt(e.target.value, 10) || 0)}
+                            className="w-full bg-[#0c0c0e] border border-[#2d2d35] rounded py-1 pl-5 pr-1.5 text-xs font-mono text-zinc-200 outline-none focus:border-amber-500/40"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <span className="block text-[8px] font-bold text-zinc-500 uppercase mb-1 tracking-wider">Dado Dano</span>
+                        <input
+                          type="text"
+                          value={attack.damageDice}
+                          onChange={(e) => handleUpdateAttackRow(index, 'damageDice', e.target.value)}
+                          placeholder="ex: 1d6"
+                          className="w-full bg-[#0c0c0e] border border-[#2d2d35] rounded py-1 px-1.5 text-xs font-mono text-zinc-200 outline-none focus:border-amber-500/40"
+                        />
+                      </div>
+
+                      <div>
+                        <span className="block text-[8px] font-bold text-zinc-500 uppercase mb-1 tracking-wider">Bônus Dano</span>
+                        <div className="relative">
+                          <span className="absolute left-2.5 top-1.5 text-xs text-zinc-500 font-mono font-medium">
+                            {attack.damageMod >= 0 ? '+' : ''}
+                          </span>
+                          <input
+                            type="number"
+                            value={attack.damageMod}
+                            onChange={(e) => handleUpdateAttackRow(index, 'damageMod', parseInt(e.target.value, 10) || 0)}
+                            className="w-full bg-[#0c0c0e] border border-[#2d2d35] rounded py-1 pl-5 pr-1.5 text-xs font-mono text-zinc-200 outline-none focus:border-amber-500/40"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {type === 'enemy' && (
+                <div className="grid grid-cols-1 gap-1.5 pt-1.5">
+                  <label className="block text-[10px] font-bold text-zinc-450 uppercase tracking-wide">Multiataque por criatura</label>
                   <select
                     value={attacksPerCreature}
                     onChange={(e) => setAttacksPerCreature(parseInt(e.target.value, 10) || 1)}
                     className="w-full bg-[#0c0c0e] border border-[#2d2d35] focus:border-amber-500 rounded-lg py-2 px-3 text-sm text-zinc-200 outline-none transition-all font-mono"
                     id="input-multiattack"
                   >
-                    <option value="1">1 ataque/turno</option>
-                    <option value="2">2 ataques (Multi 2)</option>
-                    <option value="3">3 ataques (Multi 3)</option>
-                    <option value="4">4 ataques (Multi 4)</option>
+                    <option value="1">1 ataque por turno</option>
+                    <option value="2">2 ataques por turno (Multi 2)</option>
+                    <option value="3">3 ataques por turno (Multi 3)</option>
+                    <option value="4">4 ataques por turno (Multi 4)</option>
                   </select>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
 
             {/* Submit Button */}
             <button
@@ -591,28 +835,29 @@ export default function CombatantForm({ userId, onAddCombatant, onLog }: Combata
                 .filter(c => c.name.toLowerCase().includes(searchQuery.toLowerCase()))
                 .map((item, index) => {
                   const isEnemy = item.type === 'enemy';
+                  const currentQty = getItemQty(item);
                   return (
                     <div
                       key={item.id || index}
                       onClick={() => handleSelectRecent(item)}
-                      className="group flex items-center justify-between bg-[#111115]/80 hover:bg-[#16161d] border border-[#2d2d35]/50 hover:border-amber-500/30 rounded-lg p-2.5 transition-all duration-150 cursor-pointer text-left"
+                      className="group flex items-center justify-between bg-[#111115]/80 hover:bg-[#16161d] border border-[#2d2d35]/50 hover:border-amber-500/30 rounded-lg p-2.5 transition-all duration-150 cursor-pointer text-left gap-2"
                     >
-                      {/* Creature Details */}
-                      <div className="space-y-1 pr-4">
-                        <div className="flex items-center gap-2">
-                          <strong className="text-xs font-semibold text-zinc-250 group-hover:text-amber-500 transition-colors">
+                      {/* Left: Creature Details */}
+                      <div className="flex-1 min-w-0 pr-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <strong className="text-xs font-semibold text-zinc-250 group-hover:text-amber-500 transition-colors truncate">
                             {item.name}
                           </strong>
-                          <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full ${
+                          <span className={`text-[8px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded-full ${
                             isEnemy ? 'bg-rose-95/20 text-rose-450 border border-rose-90/20' : 'bg-emerald-95/20 text-emerald-400 border border-emerald-900/20'
                           }`}>
                             {isEnemy ? 'Inimigo' : 'Jogador'}
                           </span>
                         </div>
-                        <div className="flex items-center gap-1.5 text-[10px] text-zinc-500 font-mono">
+                        <div className="flex items-center gap-1.5 text-[10px] text-zinc-500 font-mono mt-0.5 flex-wrap">
                           <span>CA {item.ac}</span>
                           <span>•</span>
-                          <span>HP {item.individualHp} {item.groupSize > 1 ? `(x${item.groupSize})` : ''}</span>
+                          <span>HP {item.individualHp}</span>
                           <span>•</span>
                           <span>Atq {item.attackMod >= 0 ? `+${item.attackMod}` : item.attackMod}</span>
                           {item.attacksPerCreature > 1 && (
@@ -624,15 +869,68 @@ export default function CombatantForm({ userId, onAddCombatant, onLog }: Combata
                         </div>
                       </div>
 
-                      {/* Delete Action Button */}
-                      <button
-                        type="button"
-                        onClick={(e) => handleDeleteRecent(e, item)}
-                        title="Remover do histórico permanente"
-                        className="opacity-50 hover:opacity-100 bg-[#1c1c24] hover:bg-rose-950/20 border border-[#2d2d35] hover:border-rose-900/40 text-zinc-400 hover:text-rose-400 p-1.5 rounded-lg transition-all cursor-pointer shrink-0"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      {/* Right: Controls (Quantity Stepper, Direct Fast Add, Delete Template) */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        {/* Custom inline quantity selector for "na lista mesmo eu posso colocar a quantidade" */}
+                        <div 
+                          className="flex items-center bg-[#07070a] border border-[#2d2d35] rounded-md overflow-hidden shrink-0"
+                          onClick={(e) => e.stopPropagation()} // Prevent loading the form on clicking stepper
+                        >
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateQtyMap(item.name, -1)}
+                            className="text-zinc-500 hover:text-rose-400 font-bold px-1.5 py-0.5 text-[10px] transition-colors bg-[#0f0f13]/60 hover:bg-[#15151b] border-r border-[#2d2d35]"
+                            title="Diminuir quantidade"
+                          >
+                            <Minus className="w-2.5 h-2.5" />
+                          </button>
+                          
+                          <input
+                            type="number"
+                            min="1"
+                            value={currentQty}
+                            onChange={(e) => {
+                              const val = Math.max(1, parseInt(e.target.value, 10) || 1);
+                              setQtyMap(prev => ({ ...prev, [item.name]: val }));
+                            }}
+                            className="w-7 bg-transparent text-center text-[10px] font-bold font-mono text-zinc-300 outline-none"
+                            title="Quantidade a ser adicionada"
+                          />
+
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateQtyMap(item.name, 1)}
+                            className="text-zinc-500 hover:text-emerald-400 font-bold px-1.5 py-0.5 text-[10px] transition-colors bg-[#0f0f13]/60 hover:bg-[#15151b] border-l border-[#2d2d35]"
+                            title="Aumentar quantidade"
+                          >
+                            <Plus className="w-2.5 h-2.5" />
+                          </button>
+                        </div>
+
+                        {/* Quick Inject Direct button */}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleQuickAddDirect(item);
+                          }}
+                          title={`Rápido: Adicionar ${currentQty} unidade(s) direto ao combate`}
+                          className="bg-amber-600/10 hover:bg-amber-600 hover:text-black border border-amber-600/30 hover:border-amber-500 text-amber-500 text-[10px] font-extrabold py-1 px-1.5 rounded flex items-center gap-0.5 transition-all cursor-pointer select-none shrink-0"
+                        >
+                          <Zap className="w-3 h-3 fill-current" />
+                          <span className="hidden sm:inline">Add</span>
+                        </button>
+
+                        {/* Delete Action Button */}
+                        <button
+                          type="button"
+                          onClick={(e) => handleDeleteRecent(e, item)}
+                          title="Remover do histórico permanente"
+                          className="opacity-40 hover:opacity-100 bg-[#1c1c24] hover:bg-rose-950/20 border border-[#2d2d35] hover:border-rose-900/40 text-zinc-400 hover:text-rose-400 p-1.5 rounded-lg transition-all cursor-pointer shrink-0"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
                     </div>
                   );
                 })}

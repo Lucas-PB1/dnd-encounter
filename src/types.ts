@@ -1,8 +1,18 @@
+export interface SavedAttack {
+  id?: string;
+  name: string;
+  attackMod: number;
+  damageDice: string;
+  damageMod: number;
+}
+
 export interface Combatant {
   id: string;
   name: string;
   type: 'player' | 'enemy';
   initiative: number;
+  initiativeMod?: number;
+  initiativeRollMode?: 'normal' | 'advantage' | 'disadvantage';
   currentHp: number;
   maxHp: number; // total group max HP (individualHp * groupSize)
   individualHp: number; // Max HP of each creature in the group
@@ -11,18 +21,25 @@ export interface Combatant {
   attackMod: number; // Attack modifier (e.g. +5)
   attacksPerCreature: number; // multiattacks (e.g. 2 for multiattack 2)
   isDefeated: boolean;
+  attacksList?: SavedAttack[];
 }
 
 export interface AttackRoll {
   creatureIndex: number; // e.g. Orc 1
   attackIndex: number; // e.g. Ataque 1
   dieRoll: number; // 1d20 value
+  rawRoll1?: number;
+  rawRoll2?: number;
+  rollMode?: 'normal' | 'advantage' | 'disadvantage';
   modifier: number;
   total: number;
   isCritSuccess: boolean; // roll == 20
   isCritFailure: boolean; // roll == 1
   targetAc?: number;
   isHit?: boolean;
+  attackName?: string;
+  damageRollText?: string;
+  damageTotal?: number;
 }
 
 export interface AttackRollResult {
@@ -66,6 +83,9 @@ export interface CharacterTemplate {
   attacksPerCreature: number;
   description: string;
   initiative?: number;
+  initiativeMod?: number;
+  initiativeRollMode?: 'normal' | 'advantage' | 'disadvantage';
+  attacksList?: SavedAttack[];
   createdAt: number;
   isAutoSaved?: boolean;
 }
