@@ -67,5 +67,6 @@ export interface CharacterTemplate {
   description: string;
   initiative?: number;
   createdAt: number;
+  isAutoSaved?: boolean;
 }
 

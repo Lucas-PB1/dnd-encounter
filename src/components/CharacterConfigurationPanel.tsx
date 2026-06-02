@@ -53,7 +53,10 @@ export default function CharacterConfigurationPanel({
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const list: CharacterTemplate[] = [];
       snapshot.forEach((doc) => {
-        list.push({ id: doc.id, ...doc.data() } as CharacterTemplate);
+        const item = doc.data() as CharacterTemplate;
+        if (!item.isAutoSaved) {
+          list.push({ id: doc.id, ...item });
+        }
       });
       // Sort alphabetical or newest first
       list.sort((a, b) => b.createdAt - a.createdAt);

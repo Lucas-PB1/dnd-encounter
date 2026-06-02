@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { Combatant, AttackRollResult, LogEntry } from './types';
-import { MONSTER_PRESETS } from './presets';
 import { 
   Play, 
   RotateCcw, 
@@ -24,7 +23,9 @@ import {
   CheckCircle2,
   Users,
   LogOut,
-  FolderOpen
+  FolderOpen,
+  Wifi,
+  ScrollText
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import CombatantForm from './components/CombatantForm';
@@ -62,6 +63,8 @@ export default function App() {
   const [hpInputValues, setHpInputValues] = useState<Record<string, string>>({});
   const [filterType, setFilterType] = useState<'all' | 'players' | 'enemies'>('all');
   const [activeTab, setActiveTab] = useState<'quick-combat' | 'char-library'>('quick-combat');
+  const [activeSidebarTab, setActiveSidebarTab] = useState<'combat' | 'collection' | 'sharing' | 'logs'>('combat');
+  const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
 
   // Attack Custom Targeting States
   const [attackConfigureId, setAttackConfigureId] = useState<string | null>(null);
@@ -405,6 +408,7 @@ export default function App() {
 
   // Add a combatant manually or loaded from config catalog
   const handleAddCombatant = async (newCombatant: Omit<Combatant, 'id' | 'isDefeated'>) => {
+    setIsAddModalOpen(false);
     const combatant: Combatant = {
       ...newCombatant,
       id: Math.random().toString(36).substring(2, 9),
@@ -416,37 +420,54 @@ export default function App() {
       return updated.sort((a, b) => b.initiative - a.initiative);
     });
 
-    // Auto-save created enemies: "se o mestre criar um inimigo salve ele automaticamente e ele pode ser visto em outra aba"
-    if (userId && newCombatant.type === 'enemy') {
-      try {
-        let baseName = newCombatant.name;
-        // Clean group size suffix if it got appended (e.g. Goblin 1, Goblin x3, etc.)
-        if (newCombatant.groupSize > 1) {
-          const suffixRegex = new RegExp(`\\s+(x|multi)\\s*${newCombatant.groupSize}$`, 'i');
-          baseName = baseName.replace(suffixRegex, '').trim();
-        }
+    // Auto-save created combatants (both enemies and players) automatically
+    try {
+      let baseName = newCombatant.name;
+      // Clean group size suffix if it got appended (e.g. Goblin x3)
+      if (newCombatant.groupSize > 1) {
+        const suffixRegex = new RegExp(`\\s+(x|multi)\\s*${newCombatant.groupSize}$`, 'i');
+        baseName = baseName.replace(suffixRegex, '').trim();
+      }
 
-        const charId = Math.random().toString(36).substring(2, 9);
-        const autoSavedEnemy = {
+      const freshPreset = {
+        name: baseName,
+        type: newCombatant.type,
+        ac: newCombatant.ac || 10,
+        individualHp: newCombatant.individualHp || 10,
+        groupSize: newCombatant.groupSize || 1,
+        attackMod: newCombatant.attackMod || 0,
+        attacksPerCreature: newCombatant.attacksPerCreature || 1,
+        description: `Adicionado em ${new Date().toLocaleDateString('pt-BR')} ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`,
+        isAutoSaved: true,
+        createdAt: Date.now()
+      };
+
+      // 1. Sync to Client LocalStorage
+      try {
+        const localData = localStorage.getItem('d20_auto_saved_combatants');
+        let localList = localData ? JSON.parse(localData) : [];
+        // Dedup so we don't spam the list with the exact same name
+        localList = localList.filter((x: any) => x.name.toLowerCase() !== baseName.toLowerCase());
+        localList.unshift({ ...freshPreset, id: 'local_' + Math.random().toString(36).substring(2, 9) });
+        localStorage.setItem('d20_auto_saved_combatants', JSON.stringify(localList.slice(0, 30)));
+      } catch (err) {
+        console.error("Local storage sync error:", err);
+      }
+
+      // 2. Sync to Cloud Firestore if connected
+      if (userId) {
+        const charId = 'auto_' + Math.random().toString(36).substring(2, 9);
+        const autoSavedChar = {
+          ...freshPreset,
           id: charId,
           userId,
-          name: baseName,
-          type: 'enemy',
-          ac: newCombatant.ac || 10,
-          individualHp: newCombatant.individualHp || 10,
-          groupSize: newCombatant.groupSize || 1,
-          attackMod: newCombatant.attackMod || 0,
-          attacksPerCreature: newCombatant.attacksPerCreature || 1,
-          description: `Criado e salvo automaticamente em ${new Date().toLocaleDateString('pt-BR')}`,
-          createdAt: Date.now()
         };
-
         const charRef = doc(db, 'characters', charId);
-        await setDoc(charRef, sanitizeData(autoSavedEnemy));
-        addLog(`Inimigo "${baseName}" catalogado automaticamente no acervo!`, 'setup');
-      } catch (err) {
-        console.error("Erro ao catalogar inimigo automaticamente:", err);
+        await setDoc(charRef, sanitizeData(autoSavedChar));
+        addLog(`"${baseName}" foi catalogado automaticamente no histórico!`, 'setup');
       }
+    } catch (err) {
+      console.error("Erro ao catalogar criatura automaticamente:", err);
     }
   };
 
@@ -1192,7 +1213,50 @@ export default function App() {
                       }`}
                     >
                       {isActive && (
-                        <div className="absolute top-0 bottom-0 left-0 w-1 bg-amber-500"></div>
+                        <>
+                          <div className="absolute top-0 bottom-0 left-0 w-1 bg-amber-500"></div>
+                          {/* Active Turn Control Strip Header */}
+                          <div className="bg-gradient-to-r from-amber-600/10 via-amber-600/5 to-transparent border-b border-[#2d2d35] px-4 py-2.5 flex items-center justify-between gap-3 text-xs" id={`active-controls-header-${c.id}`}>
+                            <div className="flex items-center gap-2">
+                              <span className="w-2 h-2 bg-amber-500 rounded-full animate-pulse shadow-sm shadow-amber-500" />
+                              <span className="text-[10px] font-black text-amber-500 uppercase tracking-widest font-display leading-none">
+                                👑 Turno Ativo
+                              </span>
+                            </div>
+                            
+                            {!isSpectatorMode && (
+                              <div className="flex items-center gap-1.5 font-sans">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handlePrevTurn();
+                                  }}
+                                  disabled={combatants.length === 0 || !hasStarted}
+                                  className="bg-[#0c0c0e] hover:bg-[#16161a] disabled:opacity-40 disabled:pointer-events-none text-zinc-300 border border-[#2d2d35] hover:border-amber-500/40 px-2.5 py-1 rounded-md transition-all text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                                  title="Voltar Turno"
+                                >
+                                  <ChevronLeft className="w-3.5 h-3.5" />
+                                  <span>Voltar</span>
+                                </button>
+                                
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleNextTurn();
+                                  }}
+                                  disabled={combatants.length === 0}
+                                  className="bg-amber-600 hover:bg-amber-500 text-black border border-amber-500 font-black px-3 py-1 rounded-md transition-all text-[11px] flex items-center gap-1 cursor-pointer shadow-md shadow-amber-600/10"
+                                  title="Passar Vez / Avançar Turno"
+                                >
+                                  <span>Passar vez</span>
+                                  <ChevronRight className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </>
                       )}
 
                       <div className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -1455,106 +1519,279 @@ export default function App() {
         </div>
 
         {/* RIGHT COLUMN: CONTROLS, CREATURE BUILDERS, & LIVE CHANNELS (SPAN 4) */}
-        <div className="lg:col-span-4 flex flex-col space-y-6">
+        <div className="lg:col-span-4 flex flex-col space-y-4">
           
-          {/* 1. Shared Session / Transmission Status */}
-          <ShareSessionPanel
-            isSpectatorMode={isSpectatorMode}
-            sessionCode={sessionCode}
-            isBroadcasting={isBroadcasting}
-            onToggleBroadcasting={(active) => {
-              setIsBroadcasting(active);
-              addLog(active ? "Transmissão reativada - jogadas estão sendo sincronizadas!" : "Transmissão pausada - jogando em modo offline.", "setup");
-            }}
-            onStartSharing={async () => {
-              // Master manual room regenerations
-              handleCreateNewRoom();
-              setIsBroadcasting(true);
-            }}
-            onStopSharing={() => {
-              setIsBroadcasting(false);
-              addLog("Transmissão desativada pelo mestre.", "info");
-            }}
-            onExitSpectator={() => {
-              window.location.search = '';
-            }}
-            spectatorError={spectatorError}
-          />
+          {/* Roll simulation outcome floating panel */}
+          <AnimatePresence>
+            {currentRoll && (
+              <motion.div
+                initial={{ opacity: 0, y: -15, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -15, scale: 0.95 }}
+                transition={{ duration: 0.2 }}
+                className="shadow-xl"
+              >
+                <RollResultsPanel 
+                  currentRoll={currentRoll} 
+                  onClearRoll={() => setCurrentRoll(null)} 
+                />
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-          {!isSpectatorMode && (
+          {isSpectatorMode ? (
             <div className="space-y-4">
-              {/* Tab Selector to toggle creators */}
-              <div className="flex bg-[#0c0c0e] p-1 rounded-xl border border-[#2d2d35]">
+              {/* Simplified non-interactive view for spectators */}
+              <ShareSessionPanel
+                isSpectatorMode={isSpectatorMode}
+                sessionCode={sessionCode}
+                isBroadcasting={isBroadcasting}
+                onToggleBroadcasting={(active) => {
+                  setIsBroadcasting(active);
+                }}
+                onStartSharing={async () => {
+                  handleCreateNewRoom();
+                }}
+                onStopSharing={() => {}}
+                onExitSpectator={() => {
+                  window.location.search = '';
+                }}
+                spectatorError={spectatorError}
+              />
+              
+              <CombatLog 
+                logs={logs} 
+                onClearLogs={clearLogs} 
+              />
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {/* Premium Tab Selector for DM controls */}
+              <div className="flex bg-[#0c0c0e] p-1 rounded-xl border border-[#2d2d35]/60 text-xs shadow-inner">
                 <button
-                  onClick={() => setActiveTab('quick-combat')}
-                  className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${
-                    activeTab === 'quick-combat' 
-                      ? 'bg-[#2d2d35] text-amber-500 shadow border border-zinc-700/60' 
-                      : 'text-zinc-500 hover:text-zinc-350'
+                  type="button"
+                  onClick={() => setActiveSidebarTab('combat')}
+                  className={`flex-1 py-2 font-extrabold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                    activeSidebarTab === 'combat'
+                      ? 'bg-[#2d2d35] text-amber-500 shadow border border-zinc-700/50'
+                      : 'text-zinc-500 hover:text-zinc-300'
                   }`}
+                  title="Configuração de Combatentes rápidos"
                 >
-                  Criar Batalha Rápida
+                  <Swords className="w-3.5 h-3.5" />
+                  Combate
                 </button>
                 <button
-                  onClick={() => setActiveTab('char-library')}
-                  className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1 ${
-                    activeTab === 'char-library' 
-                      ? 'bg-[#2d2d35] text-amber-500 shadow border border-zinc-700/60' 
-                      : 'text-zinc-500 hover:text-zinc-350'
+                  type="button"
+                  onClick={() => setActiveSidebarTab('collection')}
+                  className={`flex-1 py-1 px-1 font-extrabold rounded-lg transition-all flex items-center justify-center gap-1 cursor-pointer text-center ${
+                    activeSidebarTab === 'collection'
+                      ? 'bg-[#2d2d35] text-amber-500 shadow border border-zinc-700/50'
+                      : 'text-zinc-500 hover:text-zinc-300'
                   }`}
+                  title="Biblioteca de Personagens permanentes no Cloud DB"
                 >
-                  <Sparkles className="w-3 h-3 text-amber-500" />
-                  Banco de Personagens
+                  <Sparkles className="w-3.5 h-3.5 text-amber-500 animate-pulse-subtle" />
+                  Acervo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveSidebarTab('sharing')}
+                  className={`flex-1 py-2 font-extrabold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                    activeSidebarTab === 'sharing'
+                      ? 'bg-[#2d2d35] text-emerald-400 shadow border border-emerald-900/30'
+                      : 'text-zinc-500 hover:text-zinc-300'
+                  }`}
+                  title="Transmissão e Código da Mesa d20"
+                >
+                  <Wifi className="w-3.5 h-3.5 shrink-0" />
+                  Sessão
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveSidebarTab('logs')}
+                  className={`flex-1 py-2 font-extrabold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                    activeSidebarTab === 'logs'
+                      ? 'bg-[#2d2d35] text-zinc-250 shadow border border-zinc-700/50'
+                      : 'text-zinc-500 hover:text-zinc-300'
+                  }`}
+                  title="Log de rolagem e ações"
+                >
+                  <ScrollText className="w-3.5 h-3.5" />
+                  Logs
                 </button>
               </div>
 
-              {activeTab === 'quick-combat' ? (
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <h3 className="text-xs font-bold text-zinc-400 tracking-wider uppercase flex items-center gap-1.5 font-display">
-                      <Plus className="w-4 h-4 text-amber-500" />
-                      Adicionar Combatente
-                    </h3>
-                    <CombatantForm 
-                      onAddCombatant={handleAddCombatant} 
-                      presets={MONSTER_PRESETS}
-                      onLog={(msg, type) => addLog(msg, type === 'info' ? 'info' : 'setup')}
-                    />
-                  </div>
+              {/* Tab Outputs */}
+              <AnimatePresence mode="wait">
+                {activeSidebarTab === 'combat' && (
+                  <motion.div
+                    key="tab-combat"
+                    initial={{ opacity: 0, y: 5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -5 }}
+                    transition={{ duration: 0.15 }}
+                    className="space-y-4"
+                  >
+                    {/* Compact Modal Trigger Card */}
+                    <button
+                      type="button"
+                      onClick={() => setIsAddModalOpen(true)}
+                      className="w-full bg-[#111115] hover:bg-[#16161c] border border-[#2d2d35]/80 hover:border-amber-500/40 p-4 rounded-xl shadow-md text-left transition-all group flex items-center justify-between cursor-pointer"
+                      id="btn-open-combatant-modal"
+                    >
+                      <div className="space-y-1">
+                        <h3 className="text-xs font-black text-amber-500 tracking-wider uppercase flex items-center gap-1.5 font-display">
+                          <Plus className="w-4 h-4" />
+                          Novo Combatente
+                        </h3>
+                        <p className="text-[10px] text-zinc-500 leading-normal max-w-[190px]">
+                          Adicione monstros ou jogadores de forma ágil por formulário visual ou texto mágico.
+                        </p>
+                      </div>
+                      <div className="bg-[#1c1c24] p-2.5 rounded-lg border border-[#2d2d35] group-hover:border-amber-500/30 group-hover:bg-[#252530] transition-all shrink-0">
+                        <Users className="w-4 h-4 text-zinc-405 group-hover:text-amber-500 transition-colors" />
+                      </div>
+                    </button>
 
-                  <SavedCombatsPanel
-                    userId={userId}
-                    currentCombatants={combatants}
-                    onLoadCombatants={handleLoadCombatLibrary}
-                    onLog={addLog}
-                  />
-                </div>
-              ) : (
-                <CharacterConfigurationPanel
-                  userId={userId}
-                  onSetUserId={(name) => handleVincularMestre(name)}
-                  onAddCombatant={handleAddCombatant}
-                  onLog={addLog}
-                />
-              )}
+                    <SavedCombatsPanel
+                      userId={userId}
+                      currentCombatants={combatants}
+                      onLoadCombatants={handleLoadCombatLibrary}
+                      onLog={addLog}
+                    />
+                  </motion.div>
+                )}
+
+                {activeSidebarTab === 'collection' && (
+                  <motion.div
+                    key="tab-collection"
+                    initial={{ opacity: 0, y: 5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -5 }}
+                    transition={{ duration: 0.15 }}
+                    className="bg-[#111115] border border-[#2d2d35] p-3 rounded-xl shadow-md"
+                  >
+                    <CharacterConfigurationPanel
+                      userId={userId}
+                      onSetUserId={(name) => handleVincularMestre(name)}
+                      onAddCombatant={handleAddCombatant}
+                      onLog={addLog}
+                    />
+                  </motion.div>
+                )}
+
+                {activeSidebarTab === 'sharing' && (
+                  <motion.div
+                    key="tab-sharing"
+                    initial={{ opacity: 0, y: 5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -5 }}
+                    transition={{ duration: 0.15 }}
+                  >
+                    <ShareSessionPanel
+                      isSpectatorMode={isSpectatorMode}
+                      sessionCode={sessionCode}
+                      isBroadcasting={isBroadcasting}
+                      onToggleBroadcasting={(active) => {
+                        setIsBroadcasting(active);
+                        addLog(active ? "Transmissão reativada - jogadas estão sendo sincronizadas!" : "Transmissão pausada - jogando em modo offline.", "setup");
+                      }}
+                      onStartSharing={async () => {
+                        handleCreateNewRoom();
+                        setIsBroadcasting(true);
+                      }}
+                      onStopSharing={() => {
+                        setIsBroadcasting(false);
+                        addLog("Transmissão desativada pelo mestre.", "info");
+                      }}
+                      onExitSpectator={() => {
+                        window.location.search = '';
+                      }}
+                      spectatorError={spectatorError}
+                    />
+                  </motion.div>
+                )}
+
+                {activeSidebarTab === 'logs' && (
+                  <motion.div
+                    key="tab-logs"
+                    initial={{ opacity: 0, y: 5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -5 }}
+                    transition={{ duration: 0.15 }}
+                  >
+                    <CombatLog 
+                      logs={logs} 
+                      onClearLogs={clearLogs} 
+                    />
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           )}
-
-          {/* 2. Attack Simulation Outcomes */}
-          <RollResultsPanel 
-            currentRoll={currentRoll} 
-            onClearRoll={() => setCurrentRoll(null)} 
-          />
-
-          {/* 3. Deep Log Streams */}
-          <CombatLog 
-            logs={logs} 
-            onClearLogs={clearLogs} 
-          />
 
         </div>
 
       </main>
+
+      {/* Floating Add Combatant Modal Overlay */}
+      <AnimatePresence>
+        {isAddModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsAddModalOpen(false)}
+              className="fixed inset-0 bg-[#050508]/80 backdrop-blur-sm"
+              id="combatant-modal-backdrop"
+            />
+            
+            {/* Content Box */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              transition={{ type: 'spring', duration: 0.3, bounce: 0.1 }}
+              className="relative w-full max-w-lg bg-[#111115] border border-[#2d2d35]/90 rounded-2xl shadow-2xl p-5 md:p-6 z-10 overflow-y-auto max-h-[90vh]"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between mb-4 border-b border-[#2d2d35]/50 pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="bg-amber-600/10 p-1.5 rounded-lg border border-amber-500/20">
+                    <Plus className="w-5 h-5 text-amber-500" />
+                  </div>
+                  <div>
+                    <h2 className="text-sm font-black text-zinc-100 tracking-wider uppercase font-display">
+                      Novo Combatente
+                    </h2>
+                    <p className="text-[10px] text-zinc-500 font-sans">
+                      Preencha o formulário ou cole texto no assistente de detecção mágica.
+                    </p>
+                  </div>
+                </div>
+                
+                <button
+                  type="button"
+                  onClick={() => setIsAddModalOpen(false)}
+                  className="bg-[#1c1c24] hover:bg-[#252530] text-zinc-400 hover:text-zinc-200 w-8 h-8 rounded-lg transition-all border border-[#2d2d35] cursor-pointer flex items-center justify-center font-bold text-xs"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Mounted combatant form */}
+              <CombatantForm 
+                userId={userId}
+                onAddCombatant={handleAddCombatant} 
+                onLog={(msg, type) => addLog(msg, type === 'info' ? 'info' : 'setup')}
+              />
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       <footer className="mt-auto border-t border-[#1e1e24] bg-[#111115] py-4 text-center">
         <p className="text-[10px] text-zinc-650 tracking-wider font-mono">

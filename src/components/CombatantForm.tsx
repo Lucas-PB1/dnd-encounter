@@ -1,15 +1,19 @@
-import React, { useState } from 'react';
-import { Combatant, MonsterPreset } from '../types';
-import { Plus, Sparkles, Swords, UserPlus, Shield, Heart, Dices, Info } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Combatant } from '../types';
+import { Plus, Sparkles, Swords, UserPlus, Shield, Heart, Dices, Info, History, Trash2, Search } from 'lucide-react';
+import { collection, query, where, onSnapshot, deleteDoc, doc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 
 interface CombatantFormProps {
+  userId?: string;
   onAddCombatant: (combatant: Omit<Combatant, 'id' | 'isDefeated'>) => void;
-  presets: MonsterPreset[];
   onLog: (message: string, type: 'info' | 'setup') => void;
 }
 
-export default function CombatantForm({ onAddCombatant, presets, onLog }: CombatantFormProps) {
+export default function CombatantForm({ userId, onAddCombatant, onLog }: CombatantFormProps) {
   const [activeTab, setActiveTab] = useState<'visual' | 'text'>('visual');
+  const [recentCreatures, setRecentCreatures] = useState<any[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
   
   // Visual fields
   const [name, setName] = useState('');
@@ -25,6 +29,85 @@ export default function CombatantForm({ onAddCombatant, presets, onLog }: Combat
   const [rawText, setRawText] = useState('');
   const [textError, setTextError] = useState('');
   const [parsedPreview, setParsedPreview] = useState<any>(null);
+
+  // Load and subscribe to recent creatures (history)
+  useEffect(() => {
+    const loadLocal = () => {
+      try {
+        const localData = localStorage.getItem('d20_auto_saved_combatants');
+        return localData ? JSON.parse(localData) : [];
+      } catch (e) {
+        console.error("Erro ao ler d20_auto_saved_combatants localmente:", e);
+        return [];
+      }
+    };
+
+    let localList = loadLocal();
+    setRecentCreatures(localList);
+
+    if (userId) {
+      const q = query(collection(db, 'characters'), where('userId', '==', userId));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const firestoreList: any[] = [];
+        snapshot.forEach((doc) => {
+          const item = doc.data();
+          if (item.isAutoSaved) {
+            firestoreList.push({ id: doc.id, ...item });
+          }
+        });
+
+        setRecentCreatures(() => {
+          const combined = [...firestoreList, ...loadLocal()];
+          const uniq: Record<string, any> = {};
+          combined.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).forEach(item => {
+            const key = item.name.toLowerCase();
+            if (!uniq[key]) {
+              uniq[key] = item;
+            }
+          });
+          return Object.values(uniq).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        });
+      }, (err) => {
+        console.error("Erro ao sincronizar criaturas recentes do Firestore:", err);
+      });
+      return () => unsubscribe();
+    }
+  }, [userId]);
+
+  const handleSelectRecent = (item: any) => {
+    setName(item.name);
+    setType(item.type || 'enemy');
+    setAc(item.ac || 10);
+    setIndividualHp(item.individualHp || 10);
+    setGroupSize(item.groupSize || 1);
+    setAttackMod(item.attackMod || 0);
+    setAttacksPerCreature(item.attacksPerCreature || 1);
+    
+    onLog(`Carregado do histórico: "${item.name}" pronto para o combate.`, 'info');
+  };
+
+  const handleDeleteRecent = async (e: React.MouseEvent, item: any) => {
+    e.stopPropagation();
+    
+    try {
+      const localData = localStorage.getItem('d20_auto_saved_combatants');
+      let localList = localData ? JSON.parse(localData) : [];
+      localList = localList.filter((x: any) => x.name.toLowerCase() !== item.name.toLowerCase());
+      localStorage.setItem('d20_auto_saved_combatants', JSON.stringify(localList));
+    } catch (err) {
+      console.error(err);
+    }
+
+    if (userId && item.id && (item.id.startsWith('auto_') || item.userId === userId)) {
+      try {
+        await deleteDoc(doc(db, 'characters', item.id));
+      } catch (err) {
+        console.error("Erro ao deletar do Firestore:", err);
+      }
+    }
+
+    setRecentCreatures(prev => prev.filter(x => x.name.toLowerCase() !== item.name.toLowerCase()));
+  };
 
   // Initiative manual roll helpers
   const handleRollInitiative = () => {
@@ -195,15 +278,7 @@ export default function CombatantForm({ onAddCombatant, presets, onLog }: Combat
     setParsedPreview(null);
   };
 
-  const applyPreset = (preset: MonsterPreset) => {
-    setName(preset.name);
-    setType('enemy');
-    setAc(preset.ac);
-    setIndividualHp(preset.individualHp);
-    setAttackMod(preset.attackMod);
-    setAttacksPerCreature(preset.attacksPerCreature);
-    setActiveTab('visual');
-  };
+
 
   return (
     <div className="bg-[#111115] border border-[#2d2d35] rounded-xl overflow-hidden shadow-xl" id="combatant-form-container">
@@ -482,23 +557,94 @@ export default function CombatantForm({ onAddCombatant, presets, onLog }: Combat
           </form>
         )}
 
-        {/* Live presets bar */}
-        <div className="border-t border-[#2d2d35] mt-5 pt-3">
-          <label className="block text-[10px] font-bold text-zinc-500 tracking-wider uppercase mb-2">Biblioteca de Monstros Comuns</label>
-          <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto pr-1">
-            {presets.map((p) => (
-              <button
-                key={p.name}
-                type="button"
-                onClick={() => applyPreset(p)}
-                className="bg-[#0c0c0e] hover:bg-[#16161a] text-zinc-300 border border-[#2d2d35] text-[11px] font-medium py-1 px-2 rounded-md hover:border-amber-600/60 transition-all flex items-center gap-1.5 shrink-0 cursor-pointer"
-              >
-                <span>{p.name}</span>
-                <span className="text-zinc-550 text-[9px] font-mono">hp:{p.individualHp}</span>
-              </button>
-            ))}
-          </div>
+
+      </div>
+
+      {/* SEÇÃO HISTÓRICO DE CRIATURAS RECENTES */}
+      <div className="border-t border-[#2d2d35]/60 bg-[#0c0c0e]/45 p-5 mt-1">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-xs font-black text-amber-500/90 uppercase tracking-widest flex items-center gap-2 font-display">
+            <History className="w-4 h-4 text-amber-500" />
+            Sessões Passadas / Histórico de Adicionados
+          </h3>
+          <span className="text-[10px] text-zinc-500 font-mono">
+            {recentCreatures.length} {recentCreatures.length === 1 ? 'criatura' : 'criaturas'}
+          </span>
         </div>
+
+        {recentCreatures.length > 0 ? (
+          <div className="space-y-3">
+            {/* Search Input for history */}
+            <div className="relative font-sans">
+              <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-zinc-605" />
+              <input
+                type="text"
+                placeholder="Pesquisar criaturas salvas..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-[#0c0c0e] border border-[#2d2d35]/70 focus:border-amber-500/60 rounded-lg py-1.5 pl-8 pr-3 text-xs text-zinc-350 placeholder-zinc-550 outline-none transition-all"
+              />
+            </div>
+
+            <div className="max-h-52 overflow-y-auto pr-1 space-y-1.5 scrollbar-thin scrollbar-thumb-[#2d2d35] scrollbar-track-transparent">
+              {recentCreatures
+                .filter(c => c.name.toLowerCase().includes(searchQuery.toLowerCase()))
+                .map((item, index) => {
+                  const isEnemy = item.type === 'enemy';
+                  return (
+                    <div
+                      key={item.id || index}
+                      onClick={() => handleSelectRecent(item)}
+                      className="group flex items-center justify-between bg-[#111115]/80 hover:bg-[#16161d] border border-[#2d2d35]/50 hover:border-amber-500/30 rounded-lg p-2.5 transition-all duration-150 cursor-pointer text-left"
+                    >
+                      {/* Creature Details */}
+                      <div className="space-y-1 pr-4">
+                        <div className="flex items-center gap-2">
+                          <strong className="text-xs font-semibold text-zinc-250 group-hover:text-amber-500 transition-colors">
+                            {item.name}
+                          </strong>
+                          <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full ${
+                            isEnemy ? 'bg-rose-95/20 text-rose-450 border border-rose-90/20' : 'bg-emerald-95/20 text-emerald-400 border border-emerald-900/20'
+                          }`}>
+                            {isEnemy ? 'Inimigo' : 'Jogador'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-[10px] text-zinc-500 font-mono">
+                          <span>CA {item.ac}</span>
+                          <span>•</span>
+                          <span>HP {item.individualHp} {item.groupSize > 1 ? `(x${item.groupSize})` : ''}</span>
+                          <span>•</span>
+                          <span>Atq {item.attackMod >= 0 ? `+${item.attackMod}` : item.attackMod}</span>
+                          {item.attacksPerCreature > 1 && (
+                            <>
+                              <span>•</span>
+                              <span>Multi {item.attacksPerCreature}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Delete Action Button */}
+                      <button
+                        type="button"
+                        onClick={(e) => handleDeleteRecent(e, item)}
+                        title="Remover do histórico permanente"
+                        className="opacity-50 hover:opacity-100 bg-[#1c1c24] hover:bg-rose-950/20 border border-[#2d2d35] hover:border-rose-900/40 text-zinc-400 hover:text-rose-400 p-1.5 rounded-lg transition-all cursor-pointer shrink-0"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        ) : (
+          <div className="bg-[#0c0c0e]/30 border border-[#2d2d35]/40 rounded-lg py-4 text-center">
+            <p className="text-[11px] text-zinc-600 font-sans">
+              Histórico de sessões vazio. Suas criaturas serão guardadas aqui automaticamente!
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

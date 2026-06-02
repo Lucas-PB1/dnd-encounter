@@ -20,17 +20,7 @@ export default function RollResultsPanel({ currentRoll, onClearRoll }: RollResul
   }, [currentRoll]);
 
   if (!currentRoll) {
-    return (
-      <div className="bg-[#111115] border border-[#2d2d35] rounded-xl p-6 shadow-xl flex flex-col items-center justify-center text-center min-h-[300px]">
-        <div className="bg-[#0c0c0e] p-4 rounded-full border border-[#2d2d35] mb-4 text-zinc-650">
-          <Swords className="w-8 h-8" />
-        </div>
-        <h3 className="text-sm font-semibold text-zinc-350 tracking-wider uppercase mb-1">Painel de Ataques</h3>
-        <p className="text-xs text-zinc-500 max-w-xs leading-relaxed">
-          Selecione um grupo de monstros na iniciativa e clique em <strong className="text-amber-505">"Atacar"</strong> para ver as rolagens e críticos aqui em tempo real.
-        </p>
-      </div>
-    );
+    return null;
   }
 
   const parsedTargetAc = targetAc !== '' ? parseInt(targetAc, 10) : undefined;
