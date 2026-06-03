@@ -594,10 +594,26 @@ export default function App() {
     
     if (!hasStarted) {
       setHasStarted(true);
-      const firstActive = combatants.findIndex(c => !c.isDefeated);
+
+      const updatedCombatants = combatants.map(c => {
+        const mod = c.initiativeMod || 0;
+        const mode = c.initiativeRollMode || 'normal';
+        const r1 = Math.floor(Math.random() * 20) + 1;
+        const r2 = Math.floor(Math.random() * 20) + 1;
+        let rollVal = r1;
+        if (mode === 'advantage') rollVal = Math.max(r1, r2);
+        if (mode === 'disadvantage') rollVal = Math.min(r1, r2);
+        
+        return { ...c, initiative: rollVal + mod };
+      });
+      
+      updatedCombatants.sort((a, b) => b.initiative - a.initiative);
+      setCombatants(updatedCombatants);
+
+      const firstActive = updatedCombatants.findIndex(c => !c.isDefeated);
       const initialIdx = firstActive !== -1 ? firstActive : 0;
       setCurrentTurnIndex(initialIdx);
-      addLog(`Início do Combate! Turno ativo de: ${combatants[initialIdx]?.name} (Iniciativa ${combatants[initialIdx]?.initiative})`, 'turn');
+      addLog(`Início do Combate! Rolagem automática de Iniciativa. Turno ativo de: ${updatedCombatants[initialIdx]?.name} (Iniciativa ${updatedCombatants[initialIdx]?.initiative})`, 'turn');
       return;
     }
 
